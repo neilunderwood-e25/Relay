@@ -10,7 +10,7 @@ import type {
   TerminalSnapshot,
   WorktreeSnapshot
 } from '../src/shared/contracts';
-import { FoundryDatabase } from '../src/main/database';
+import { RelayDatabase } from '../src/main/database';
 import { planObjective, RehanOrchestrator } from '../src/main/orchestrator';
 
 const temporaryDirectories: string[] = [];
@@ -38,7 +38,7 @@ class FakeWorktrees {
       id: `worktree-${this.created.length + 1}`,
       repoRoot: '/repo',
       path: `/worktrees/${request.name}`,
-      branch: `foundry/${request.name}`,
+      branch: `relay/${request.name}`,
       baseBranch: request.baseBranch ?? 'main',
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -89,14 +89,14 @@ class FakeTerminals {
 }
 
 function fixture(): {
-  database: FoundryDatabase;
+  database: RelayDatabase;
   worktrees: FakeWorktrees;
   terminals: FakeTerminals;
   orchestrator: RehanOrchestrator;
 } {
-  const root = mkdtempSync(join(tmpdir(), 'foundry-orchestrator-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'relay-orchestrator-test-'));
   temporaryDirectories.push(root);
-  const database = new FoundryDatabase(join(root, 'foundry.db'));
+  const database = new RelayDatabase(join(root, 'relay.db'));
   database.open();
   const worktrees = new FakeWorktrees();
   const terminals = new FakeTerminals();
@@ -141,7 +141,7 @@ describe('RehanOrchestrator', () => {
     await eventually(() => terminals.spawned.length === 2);
     expect(worktrees.created).toHaveLength(2);
     expect(new Set(terminals.spawned.map(({ snapshot }) => snapshot.cwd)).size).toBe(2);
-    expect(terminals.spawned[0].args?.join(' ')).toContain('Foundry worker coordinated by Michael');
+    expect(terminals.spawned[0].args?.join(' ')).toContain('Relay worker coordinated by Michael');
     expect(terminals.spawned.find(({ snapshot }) => snapshot.provider === 'codex')?.args?.slice(0, 3))
       .toEqual(['--ask-for-approval', 'never', 'exec']);
     expect(database.getOrchestration(created.run.id)).toMatchObject({

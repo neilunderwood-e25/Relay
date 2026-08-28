@@ -51,9 +51,11 @@ export interface AppSnapshot {
 }
 
 export type TerminalStatus = 'starting' | 'running' | 'stopping' | 'exited';
+export type TerminalRole = 'worker' | 'orchestrator';
 
 export interface TerminalSpawnRequest {
   provider: ProviderId;
+  role?: TerminalRole;
   name?: string;
   cwd: string;
   cols?: number;
@@ -63,6 +65,7 @@ export interface TerminalSpawnRequest {
 
 export interface TerminalSnapshot {
   id: string;
+  role?: TerminalRole;
   name: string;
   provider: ProviderId;
   command: string;
@@ -237,7 +240,7 @@ export interface OrchestrationTaskRequest {
 
 export type Unsubscribe = () => void;
 
-export interface FoundryApi {
+export interface RelayApi {
   getSnapshot(): Promise<AppSnapshot>;
   refreshProviders(): Promise<ProviderCapability[]>;
   chooseDirectory(purpose?: 'home' | 'project'): Promise<string | null>;

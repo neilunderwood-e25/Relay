@@ -9,7 +9,7 @@ export interface AppLogger {
 
 export function createAppLogger(logDirectory: string): AppLogger {
   mkdirSync(logDirectory, { recursive: true });
-  const logPath = join(logDirectory, 'foundry.log');
+  const logPath = join(logDirectory, 'relay.log');
   const file = pino.destination({ dest: logPath, sync: false });
   const streams: pino.StreamEntry[] = [{ stream: file }];
 
@@ -21,9 +21,9 @@ export function createAppLogger(logDirectory: string): AppLogger {
     logPath,
     logger: pino(
       {
-        level: process.env.FOUNDRY_LOG_LEVEL ?? 'info',
+        level: process.env.RELAY_LOG_LEVEL ?? 'info',
         base: {
-          service: 'foundry-harness',
+          service: 'relay-harness',
           pid: process.pid
         },
         timestamp: pino.stdTimeFunctions.isoTime

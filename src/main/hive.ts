@@ -53,9 +53,9 @@ interface HiveTaskCard {
 }
 
 function protocol(orchestratorName: string): string {
-  return `# Foundry hive protocol
+  return `# Relay hive protocol
 
-The hive is Foundry's durable coordination space. The Electron main process owns shared files.
+The hive is Relay's durable coordination space. The Electron main process owns shared files.
 
 ## ${orchestratorName} workspace
 
@@ -71,7 +71,7 @@ The hive is Foundry's durable coordination space. The Electron main process owns
 - \`tasks.json\` is the structured task ledger.
 - \`log.jsonl\` is the append-only event stream.
 
-Workers must never write into another agent's directory. Foundry will add message routing in a later phase.
+Workers must never write into another agent's directory. Relay will add message routing in a later phase.
 `;
 }
 
@@ -93,7 +93,8 @@ export class HiveManager {
       mkdirSync(join(this.agentRoot, 'inbox', '.done'), { recursive: true });
       mkdirSync(join(this.agentRoot, 'outbox', '.sent'), { recursive: true });
       this.atomicWrite(join(this.root, 'PROTOCOL.md'), protocol(this.orchestratorName));
-      this.writeIfMissing(join(this.root, 'board.md'), `# Foundry board\n\n_${this.orchestratorName} owns this shared plan._\n`);
+      this.writeIfMissing(join(this.root, 'board.md'), `# Relay board\n\n_${this.orchestratorName} owns this shared plan._\n`);
+      this.migrateLegacyBoard();
       this.writeJsonIfMissing(join(this.root, 'tasks.json'), { version: 1, tasks: [] });
       this.writeIfMissing(join(this.root, 'log.jsonl'), '');
       this.writeIfMissing(
@@ -107,7 +108,7 @@ export class HiveManager {
         [
           `# ${this.orchestratorName}`,
           '',
-          '- Role: Foundry orchestrator',
+          '- Role: Relay orchestrator',
           '- Owns: decomposition, assignment, task tracking, integration decisions, and final QA',
           '- Delegates implementation to CLI workers in isolated Git worktrees',
           '- Shared hive: ../../',
@@ -143,7 +144,7 @@ export class HiveManager {
       [
         `# ${this.orchestratorName}`,
         '',
-        '- Role: Foundry orchestrator',
+        '- Role: Relay orchestrator',
         '- Owns: decomposition, assignment, task tracking, integration decisions, and final QA',
         '- Delegates implementation to CLI workers in isolated Git worktrees',
         '- Shared hive: ../../',
@@ -157,11 +158,11 @@ export class HiveManager {
   syncOrchestrations(snapshots: OrchestrationSnapshot[]): void {
     if (!this.ready) return;
     const ledger = this.readJson<HiveLedger>(join(this.root, 'tasks.json'), { version: 1, tasks: [] });
-    const external = ledger.tasks.filter((task) => task.source !== 'foundry');
+    const external = ledger.tasks.filter((task) => !['relay', 'foundry'].includes(task.source));
     const tasks = snapshots.flatMap((snapshot) => snapshot.tasks.map((task): HiveTaskCard => ({
       id: task.id,
       runId: task.runId,
-      source: 'foundry',
+      source: 'relay',
       title: task.title,
       description: task.instructions,
       deliverable: task.deliverable,
@@ -233,6 +234,15 @@ export class HiveManager {
 
   private writeIfMissing(path: string, content: string): void {
     if (!existsSync(path)) this.atomicWrite(path, content);
+  }
+
+  private migrateLegacyBoard(): void {
+    const path = join(this.root, 'board.md');
+    const current = readFileSync(path, 'utf8');
+    const migrated = current
+      .replace(/^# Foundry board$/m, '# Relay board')
+      .replace(/^_Rehan owns this shared plan\._$/m, `_${this.orchestratorName} owns this shared plan._`);
+    if (migrated !== current) this.atomicWrite(path, migrated);
   }
 
   private writeJsonIfMissing(path: string, value: unknown): void {

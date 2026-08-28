@@ -25,7 +25,7 @@ export function StartupWizard({ onComplete }: StartupWizardProps): React.JSX.Ele
   const choose = async (purpose: 'home' | 'project'): Promise<void> => {
     setError(null);
     try {
-      const selected = await window.foundry.chooseDirectory(purpose);
+      const selected = await window.relay.chooseDirectory(purpose);
       if (!selected) return;
       if (purpose === 'home') setHarnessHome(selected);
       else setProjectPath(selected);
@@ -39,7 +39,7 @@ export function StartupWizard({ onComplete }: StartupWizardProps): React.JSX.Ele
     setBusy(true);
     setError(null);
     try {
-      onComplete(await window.foundry.configureWorkspace({ harnessHome, projectPath }));
+      onComplete(await window.relay.configureWorkspace({ harnessHome, projectPath }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -97,7 +97,7 @@ export function StartupWizard({ onComplete }: StartupWizardProps): React.JSX.Ele
               }
             }}
           >
-            {busy ? 'Starting' : isHome ? 'Continue' : 'Open Foundry'}
+            {busy ? 'Starting' : isHome ? 'Continue' : 'Open Relay'}
             {!busy && <Icon icon={ArrowRight01Icon} size={15} />}
           </Button>
         </CardFooter>

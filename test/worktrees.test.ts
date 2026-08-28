@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
-import { FoundryDatabase } from '../src/main/database';
+import { RelayDatabase } from '../src/main/database';
 import { WorktreeManager } from '../src/main/worktrees';
 
 const temporaryDirectories: string[] = [];
@@ -18,20 +18,20 @@ afterEach(() => {
 function fixture(): {
   root: string;
   repo: string;
-  database: FoundryDatabase;
+  database: RelayDatabase;
   manager: WorktreeManager;
 } {
-  const root = mkdtempSync(join(tmpdir(), 'foundry-worktree-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'relay-worktree-test-'));
   temporaryDirectories.push(root);
   const repo = join(root, 'project');
   git(root, 'init', '-b', 'main', repo);
-  git(repo, 'config', 'user.name', 'Foundry Test');
-  git(repo, 'config', 'user.email', 'foundry@example.test');
+  git(repo, 'config', 'user.name', 'Relay Test');
+  git(repo, 'config', 'user.email', 'relay@example.test');
   writeFileSync(join(repo, 'README.md'), '# Test\n');
   git(repo, 'add', 'README.md');
   git(repo, 'commit', '-m', 'Initial commit');
 
-  const database = new FoundryDatabase(join(root, 'foundry.db'));
+  const database = new RelayDatabase(join(root, 'relay.db'));
   database.open();
   const manager = new WorktreeManager({
     database,
@@ -62,7 +62,7 @@ describe('WorktreeManager', () => {
     const created = await manager.create({ repoPath: repo, name: 'worker-one', baseBranch: 'main' });
 
     expect(created).toMatchObject({
-      branch: 'foundry/worker-one',
+      branch: 'relay/worker-one',
       baseBranch: 'main',
       managed: true,
       status: 'ready'

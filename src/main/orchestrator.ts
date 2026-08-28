@@ -19,7 +19,7 @@ import type {
 } from '../shared/contracts';
 import { DEFAULT_AGENT_NAMES, DEFAULT_ORCHESTRATOR_NAME } from '../shared/contracts';
 import { planObjective } from '../shared/orchestration';
-import type { FoundryDatabase } from './database';
+import type { RelayDatabase } from './database';
 
 export { planObjective } from '../shared/orchestration';
 
@@ -51,7 +51,7 @@ interface TerminalService {
 }
 
 export interface RehanOrchestratorOptions {
-  database: FoundryDatabase;
+  database: RelayDatabase;
   logger: Logger;
   worktrees: WorktreeService;
   terminals: TerminalService;
@@ -397,7 +397,7 @@ export class RehanOrchestrator {
 
 function workerPrompt(run: OrchestrationRun, task: OrchestrationTask, orchestratorName: string): string {
   return [
-    `You are ${DEFAULT_AGENT_NAMES[task.provider]}, a Foundry worker coordinated by ${orchestratorName}.`,
+    `You are ${DEFAULT_AGENT_NAMES[task.provider]}, a Relay worker coordinated by ${orchestratorName}.`,
     `Objective: ${run.objective}`,
     `Role: ${task.role}`,
     `Your task: ${task.instructions}`,

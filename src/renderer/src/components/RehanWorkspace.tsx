@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Activity01Icon,
   Alert02Icon,
   Audit01Icon,
   Cancel01Icon,
@@ -35,6 +36,8 @@ import { Icon } from './ui/Icon';
 import { Input } from './ui/Input';
 import { Tooltip } from './ui/Tooltip';
 import { RichTextEditor } from './RichTextEditor';
+import { OrchestratorTerminal } from './OrchestratorTerminal';
+import { Tabs, TabsList, TabsTrigger } from './ui/Tabs';
 
 const STRATEGIES: Array<{
   id: OrchestrationStrategy;
@@ -74,6 +77,7 @@ export function RehanWorkspace({
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(orchestratorName);
   const [savingName, setSavingName] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<'monitor' | 'terminal'>('monitor');
 
   useEffect(() => {
     if (!editingName) setNameDraft(orchestratorName);
@@ -95,8 +99,8 @@ export function RehanWorkspace({
     setLoading(true);
     setError(null);
     try {
-      const repo = await window.foundry.inspectRepository(cwd);
-      const nextRuns = repo.mainRoot ? await window.foundry.listOrchestrations(repo.mainRoot) : [];
+      const repo = await window.relay.inspectRepository(cwd);
+      const nextRuns = repo.mainRoot ? await window.relay.listOrchestrations(repo.mainRoot) : [];
       setRepository(repo);
       setRuns(nextRuns);
       setSelectedRunId((current) => current && nextRuns.some(({ run }) => run.id === current)
@@ -111,7 +115,7 @@ export function RehanWorkspace({
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  useEffect(() => window.foundry.onOrchestrationUpdate((snapshot) => {
+  useEffect(() => window.relay.onOrchestrationUpdate((snapshot) => {
     setRuns((current) => {
       if (repository?.mainRoot && snapshot.run.repoRoot !== repository.mainRoot) return current;
       const exists = current.some((candidate) => candidate.run.id === snapshot.run.id);
@@ -140,7 +144,7 @@ export function RehanWorkspace({
     setBusy(true);
     setError(null);
     try {
-      const created = await window.foundry.createOrchestration({
+      const created = await window.relay.createOrchestration({
         repoPath: cwd,
         objective: objective.trim(),
         strategy,
@@ -159,13 +163,13 @@ export function RehanWorkspace({
 
   const stop = async (runId: string): Promise<void> => {
     setError(null);
-    const result = await window.foundry.stopOrchestration(runId);
+    const result = await window.relay.stopOrchestration(runId);
     if (!result.ok) setError(result.error ?? 'Could not stop this run.');
   };
 
   const retry = async (taskId: string): Promise<void> => {
     setError(null);
-    const result = await window.foundry.retryOrchestrationTask({ taskId });
+    const result = await window.relay.retryOrchestrationTask({ taskId });
     if (!result.ok) setError(result.error ?? 'Could not retry this task.');
   };
 
@@ -223,16 +227,32 @@ export function RehanWorkspace({
           )}
           {activeCount > 0 && <Badge variant="success">{activeCount} active</Badge>}
         </div>
-        <Tooltip content="Refresh runs">
-          <Button variant="ghost" size="icon" aria-label="Refresh runs" disabled={loading} onClick={() => void refresh()}>
-            <Icon icon={RefreshIcon} size={16} />
-          </Button>
-        </Tooltip>
+        <div className="orchestrator-header-controls">
+          <Tabs value={workspaceMode} onValueChange={(value) => setWorkspaceMode(value as 'monitor' | 'terminal')}>
+            <TabsList className="orchestrator-mode-switch" aria-label="Orchestrator view">
+              <Tooltip content="Monitor view">
+                <TabsTrigger value="monitor"><Icon icon={Activity01Icon} size={14} />Monitor</TabsTrigger>
+              </Tooltip>
+              <Tooltip content="Terminal mode">
+                <TabsTrigger value="terminal"><Icon icon={SquareTerminalIcon} size={14} />Terminal</TabsTrigger>
+              </Tooltip>
+            </TabsList>
+          </Tabs>
+          {workspaceMode === 'monitor' && (
+            <Tooltip content="Refresh runs">
+              <Button variant="ghost" size="icon" aria-label="Refresh runs" disabled={loading} onClick={() => void refresh()}>
+                <Icon icon={RefreshIcon} size={16} />
+              </Button>
+            </Tooltip>
+          )}
+        </div>
       </header>
 
       {error && <div className="worktree-error" role="alert"><Icon icon={Alert02Icon} size={15} />{error}</div>}
 
-      {!loading && !repository?.isRepository ? (
+      {workspaceMode === 'terminal' ? (
+        <OrchestratorTerminal cwd={cwd} name={orchestratorName} providers={providers} />
+      ) : !loading && !repository?.isRepository ? (
         <Card className="worktree-empty-card">
           <CardContent className="worktree-empty-content">
             <span className="rehan-command-icon"><Icon icon={Robot01Icon} size={24} /></span>
@@ -431,7 +451,7 @@ function TaskDetail({ task, onRetry, onOpenTerminal }: {
       <div className="rehan-detail-main">
         <div className="rehan-detail-title">
           <strong>{task.title}</strong>
-          {task.branch && <span><Icon icon={GitBranchIcon} size={11} />{task.branch.replace(/^foundry\//, '')}</span>}
+          {task.branch && <span><Icon icon={GitBranchIcon} size={11} />{task.branch.replace(/^(?:relay|foundry)\//, '')}</span>}
         </div>
         <p>{task.instructions}</p>
         {(task.error || task.summary) && (

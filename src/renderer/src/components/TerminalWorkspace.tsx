@@ -17,28 +17,30 @@ import { Tabs, TabsList, TabsTrigger } from './ui/Tabs';
 import { Tooltip } from './ui/Tooltip';
 
 export function TerminalWorkspace(): React.JSX.Element {
-  const terminals = useTerminalStore((state) => state.terminals);
+  const terminals = useTerminalStore((state) => state.terminals.filter(
+    (terminal) => terminal.role !== 'orchestrator'
+  ));
   const selectedId = useTerminalStore((state) => state.selectedId);
   const select = useTerminalStore((state) => state.select);
   const remove = useTerminalStore((state) => state.remove);
   const markStopping = useTerminalStore((state) => state.markStopping);
   const setError = useTerminalStore((state) => state.setError);
-  const selected = terminals.find((terminal) => terminal.id === selectedId) ?? null;
+  const selected = terminals.find((terminal) => terminal.id === selectedId) ?? terminals[0] ?? null;
 
   const stop = async (terminal: TerminalSnapshot): Promise<void> => {
     const force = terminal.status === 'stopping';
-    const result = await window.foundry.stopTerminal(terminal.id, force);
+    const result = await window.relay.stopTerminal(terminal.id, force);
     if (!result.ok) setError(result.error ?? 'Could not stop terminal.');
     else if (!force) markStopping(terminal.id);
   };
 
   const interrupt = async (terminal: TerminalSnapshot): Promise<void> => {
-    const result = await window.foundry.interruptTerminal(terminal.id);
+    const result = await window.relay.interruptTerminal(terminal.id);
     if (!result.ok) setError(result.error ?? 'Could not interrupt terminal.');
   };
 
   const dismiss = async (terminal: TerminalSnapshot): Promise<void> => {
-    const result = await window.foundry.dismissTerminal(terminal.id);
+    const result = await window.relay.dismissTerminal(terminal.id);
     if (result.ok) remove(terminal.id);
     else setError(result.error ?? 'Could not dismiss terminal.');
   };
@@ -46,7 +48,7 @@ export function TerminalWorkspace(): React.JSX.Element {
   return (
     <Card className="terminal-card">
       <CardHeader className="terminal-card-header">
-        <Tabs value={selectedId ?? ''} onValueChange={select} className="terminal-tabs">
+        <Tabs value={selected?.id ?? ''} onValueChange={select} className="terminal-tabs">
           <TabsList>
             {terminals.length === 0 ? (
               <span className="terminal-label"><Icon icon={SquareTerminalIcon} size={15} /> Terminal</span>

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { FoundryDatabase } from '../src/main/database';
+import { RelayDatabase } from '../src/main/database';
 
 const temporaryDirectories: string[] = [];
 
@@ -12,13 +12,13 @@ afterEach(() => {
   }
 });
 
-function temporaryDatabase(): FoundryDatabase {
-  const directory = mkdtempSync(join(tmpdir(), 'foundry-db-test-'));
+function temporaryDatabase(): RelayDatabase {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-db-test-'));
   temporaryDirectories.push(directory);
-  return new FoundryDatabase(join(directory, 'foundry.db'));
+  return new RelayDatabase(join(directory, 'relay.db'));
 }
 
-describe('FoundryDatabase', () => {
+describe('RelayDatabase', () => {
   it('opens and applies every migration', () => {
     const database = temporaryDatabase();
     database.open();
@@ -62,7 +62,7 @@ describe('FoundryDatabase', () => {
       id: 'worktree-1',
       repoRoot: '/tmp/project',
       path: '/tmp/worktrees/agent-1',
-      branch: 'foundry/agent-1',
+      branch: 'relay/agent-1',
       baseBranch: 'main',
       createdAt: 100,
       updatedAt: 100

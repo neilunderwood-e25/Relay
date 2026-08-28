@@ -55,6 +55,12 @@ export class PtyManager {
 
   async spawn(request: TerminalSpawnRequest): Promise<TerminalSnapshot> {
     this.validateSpawnRequest(request);
+    if (request.role === 'orchestrator') {
+      const existing = [...this.sessions.values()].find(
+        (session) => session.snapshot.role === 'orchestrator' && session.pty !== null
+      );
+      if (existing) return { ...existing.snapshot };
+    }
     const liveCount = [...this.sessions.values()].filter((session) => session.pty !== null).length;
     if (liveCount >= MAX_LIVE_TERMINALS) {
       throw new Error(`The terminal limit of ${MAX_LIVE_TERMINALS} has been reached.`);
@@ -84,6 +90,7 @@ export class PtyManager {
     const session: TerminalSession = {
       snapshot: {
         id,
+        role: request.role ?? 'worker',
         name: cleanName(request.name) || `${request.provider === 'claude' ? 'Claude' : 'Codex'} terminal`,
         provider: request.provider,
         command: executable,
@@ -258,6 +265,9 @@ export class PtyManager {
     if (request.name !== undefined && (typeof request.name !== 'string' || request.name.length > 80)) {
       throw new Error('Terminal names must be at most 80 characters.');
     }
+    if (request.role !== undefined && !['worker', 'orchestrator'].includes(request.role)) {
+      throw new Error('Unsupported terminal role.');
+    }
     if (request.args !== undefined) {
       if (!Array.isArray(request.args) || request.args.length > 64) throw new Error('Too many terminal arguments.');
       if (request.args.some((arg) => typeof arg !== 'string' || arg.length > 4096)) {
@@ -274,7 +284,7 @@ function terminalEnvironment(): Record<string, string> {
   }
   environment.TERM = 'xterm-256color';
   environment.COLORTERM = 'truecolor';
-  environment.TERM_PROGRAM = 'Foundry';
+  environment.TERM_PROGRAM = 'Relay';
   return environment;
 }
 

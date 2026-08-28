@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 function fixture(): { root: string; hive: HiveManager } {
-  const root = mkdtempSync(join(tmpdir(), 'foundry-hive-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'relay-hive-test-'));
   temporaryDirectories.push(root);
   return { root, hive: new HiveManager(join(root, 'hive'), 'Michael') };
 }
@@ -39,8 +39,11 @@ describe('HiveManager', () => {
 
     const memoryPath = join(hive.agentRoot, 'memory.md');
     writeFileSync(memoryPath, '# durable memory\n', 'utf8');
+    const boardPath = join(hive.root, 'board.md');
+    writeFileSync(boardPath, '# Foundry board\n\n_Rehan owns this shared plan._\n', 'utf8');
     expect(hive.ensure().ready).toBe(true);
     expect(readFileSync(memoryPath, 'utf8')).toBe('# durable memory\n');
+    expect(readFileSync(boardPath, 'utf8')).toBe('# Relay board\n\n_Michael owns this shared plan._\n');
   });
 
   it('mirrors orchestration tasks and orchestrator status into the hive', () => {

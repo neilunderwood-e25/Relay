@@ -1,8 +1,9 @@
 {
-  "name": "foundry-harness",
+  "name": "relay-harness",
+  "productName": "Relay",
   "version": "0.1.0",
   "private": true,
-  "description": "A desktop multi-agent coding harness orchestrated by Rehan.",
+  "description": "A desktop multi-agent coding harness orchestrated by Michael.",
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {

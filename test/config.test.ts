@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 function fixture(): { root: string; store: WorkspaceConfigStore } {
-  const root = mkdtempSync(join(tmpdir(), 'foundry-config-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'relay-config-test-'));
   temporaryDirectories.push(root);
   return { root, store: new WorkspaceConfigStore(join(root, 'app', 'config.json')) };
 }
@@ -34,7 +34,7 @@ describe('WorkspaceConfigStore', () => {
     const { store } = fixture();
     const config = {
       onboardingComplete: true,
-      harnessHome: '/tmp/foundry-home',
+      harnessHome: '/tmp/relay-home',
       projectPath: '/tmp/coding-project',
       orchestratorName: 'Michael'
     };

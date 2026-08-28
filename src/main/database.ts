@@ -104,7 +104,7 @@ const MIGRATIONS: Migration[] = [
   }
 ];
 
-export class FoundryDatabase {
+export class RelayDatabase {
   private database: Database.Database | null = null;
 
   constructor(readonly path: string) {}
@@ -285,13 +285,13 @@ export class FoundryDatabase {
       const tasks = database.prepare(`
         UPDATE orchestration_tasks
         SET status = 'blocked', updated_at = ?, completed_at = ?,
-            error = 'Foundry restarted before this task finished.'
+            error = 'Relay restarted before this task finished.'
         WHERE status IN ('queued', 'starting', 'running', 'stopping')
       `).run(now, now).changes;
       database.prepare(`
         UPDATE orchestration_runs
         SET status = 'blocked', updated_at = ?, completed_at = ?,
-            error = 'Foundry restarted before this run finished.'
+            error = 'Relay restarted before this run finished.'
         WHERE status IN ('queued', 'running', 'stopping')
       `).run(now, now);
       return tasks;
@@ -367,7 +367,7 @@ export class FoundryDatabase {
   }
 
   private requireOpen(): Database.Database {
-    if (!this.database) throw new Error('Foundry database is not open');
+    if (!this.database) throw new Error('Relay database is not open');
     return this.database;
   }
 }

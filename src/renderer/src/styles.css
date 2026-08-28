@@ -54,7 +54,7 @@ input:focus-visible {
 
 code { font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace; }
 
-.foundry-shell {
+.relay-shell {
   width: 100%;
   height: 100%;
   background: var(--background);
@@ -402,6 +402,31 @@ code { font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace; }
 }
 
 .dashboard-title { gap: 8px; }
+
+.orchestrator-header-controls {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.orchestrator-mode-switch {
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 2px;
+  background: #0b0e14;
+}
+
+.orchestrator-mode-switch .ui-tabs-trigger {
+  height: 29px;
+  padding: 0 10px;
+}
+
+.orchestrator-mode-switch .ui-tabs-trigger[data-state='active'] {
+  background: #1a202b;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+}
 
 .dashboard-title h1 {
   margin: 0;
@@ -1082,6 +1107,65 @@ code { font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace; }
   flex: 1;
   flex-direction: column;
   overflow: hidden;
+}
+
+.orchestrator-terminal-card { flex: 1; }
+
+.orchestrator-terminal-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.orchestrator-terminal-title .rehan-command-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+
+.orchestrator-terminal-title > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.orchestrator-terminal-title strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orchestrator-terminal-error {
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(251, 113, 133, 0.25);
+  padding: 7px 11px;
+  background: rgba(251, 113, 133, 0.07);
+  color: #fda4af;
+  font-size: 11px;
+}
+
+.orchestrator-terminal-empty {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.orchestrator-provider-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.orchestrator-provider-picker .selected {
+  border-color: #3a4655;
+  color: var(--foreground);
 }
 
 .terminal-card-header {

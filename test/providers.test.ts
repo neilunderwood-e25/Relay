@@ -29,7 +29,7 @@ describe('provider command validation', () => {
 
 describe('resolveExecutable', () => {
   it.skipIf(process.platform === 'win32')('resolves an executable from PATH without invoking a shell', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'foundry-provider-test-'));
+    const root = mkdtempSync(join(tmpdir(), 'relay-provider-test-'));
     temporaryDirectories.push(root);
     const bin = join(root, 'bin');
     mkdirSync(bin);

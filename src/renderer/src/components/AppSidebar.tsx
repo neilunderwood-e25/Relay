@@ -20,7 +20,7 @@ export function AppSidebar({ activeView, orchestratorName, onNavigate, onChooseD
   onChooseDirectory: () => void;
 }): React.JSX.Element {
   return (
-    <aside className="app-sidebar" aria-label="Foundry navigation">
+    <aside className="app-sidebar" aria-label="Relay navigation">
       <Tooltip content="Choose project" side="right">
         <Button variant="ghost" size="icon" className="sidebar-project-button" onClick={onChooseDirectory} aria-label="Choose project">
           <Icon icon={FolderGitIcon} />

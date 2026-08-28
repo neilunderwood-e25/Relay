@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, realpathSync, renameSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import type { Logger } from 'pino';
@@ -17,13 +17,15 @@ import type {
 import { DEFAULT_ORCHESTRATOR_NAME } from '../shared/contracts';
 import { IPC } from '../shared/ipc';
 import { WorkspaceConfigStore } from './config';
-import { FoundryDatabase } from './database';
+import { RelayDatabase } from './database';
 import { HiveManager } from './hive';
 import { createAppLogger } from './logger';
 import { RehanOrchestrator } from './orchestrator';
 import { detectProviders } from './providers';
 import { PtyManager } from './pty';
 import { WorktreeManager } from './worktrees';
+
+app.setName('Relay');
 
 const EMPTY_WORKSPACE: WorkspaceConfig = {
   onboardingComplete: false,
@@ -36,7 +38,7 @@ let mainWindow: BrowserWindow | null = null;
 let logger: Logger | null = null;
 let configStore: WorkspaceConfigStore | null = null;
 let workspaceConfig: WorkspaceConfig = { ...EMPTY_WORKSPACE };
-let database: FoundryDatabase | null = null;
+let database: RelayDatabase | null = null;
 let hive: HiveManager | null = null;
 let ptyManager: PtyManager | null = null;
 let worktreeManager: WorktreeManager | null = null;
@@ -48,6 +50,7 @@ function createWindow(): BrowserWindow {
     height: 760,
     minWidth: 900,
     minHeight: 600,
+    title: 'Relay',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 17 } : undefined,
     show: false,
@@ -85,7 +88,7 @@ async function buildAppSnapshot(): Promise<AppSnapshot> {
     defaultWorkingDirectory: workspaceConfig.projectPath ?? '',
     database: database?.health() ?? {
       open: false,
-      path: home ? join(home, 'foundry.db') : '',
+      path: home ? join(home, 'relay.db') : '',
       schemaVersion: 0
     },
     hive: hive?.health() ?? {
@@ -100,9 +103,9 @@ async function buildAppSnapshot(): Promise<AppSnapshot> {
 
 function bootstrapWorkspace(harnessHome: string): void {
   if (database && hive && worktreeManager && rehan) return;
-  if (!logger || !ptyManager) throw new Error('Foundry is not ready yet.');
+  if (!logger || !ptyManager) throw new Error('Relay is not ready yet.');
 
-  const nextDatabase = new FoundryDatabase(join(harnessHome, 'foundry.db'));
+  const nextDatabase = new RelayDatabase(migrateLegacyDatabase(harnessHome));
   const nextHive = new HiveManager(join(harnessHome, 'hive'), workspaceConfig.orchestratorName);
   try {
     nextDatabase.open();
@@ -190,6 +193,30 @@ function isNestedPath(parent: string, candidate: string): boolean {
   return nested.length > 0 && !nested.startsWith('..') && !isAbsolute(nested);
 }
 
+function migrateLegacyDatabase(harnessHome: string): string {
+  const path = join(harnessHome, 'relay.db');
+  const legacyPath = join(harnessHome, 'foundry.db');
+  if (!existsSync(path) && existsSync(legacyPath)) {
+    for (const suffix of ['', '-wal', '-shm']) {
+      const source = `${legacyPath}${suffix}`;
+      if (existsSync(source)) renameSync(source, `${path}${suffix}`);
+    }
+    logger?.info({ from: legacyPath, to: path }, 'Migrated legacy database');
+  }
+  return path;
+}
+
+function applicationConfigPath(appData: string): string {
+  const path = join(appData, 'config.json');
+  const applicationData = app.getPath('appData');
+  const legacyPath = join(applicationData, 'foundry-harness', 'config.json');
+  if (!existsSync(path) && isNestedPath(applicationData, appData) && existsSync(legacyPath)) {
+    mkdirSync(appData, { recursive: true });
+    copyFileSync(legacyPath, path);
+  }
+  return path;
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle(IPC.appSnapshot, () => buildAppSnapshot());
   ipcMain.handle(IPC.providersRefresh, () => detectProviders());
@@ -208,7 +235,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC.workspaceConfigure, async (_event, request: WorkspaceConfigureRequest) => {
     const nextConfig = validateWorkspace(request);
     if (database && workspaceConfig.harnessHome !== nextConfig.harnessHome) {
-      throw new Error('Restart Foundry to change the Harness Home.');
+      throw new Error('Restart Relay to change the Harness Home.');
     }
     bootstrapWorkspace(nextConfig.harnessHome as string);
     workspaceConfig = configStore?.write(nextConfig) ?? nextConfig;
@@ -302,7 +329,7 @@ app.whenReady().then(() => {
   const appData = app.getPath('userData');
   const appLogger = createAppLogger(join(appData, 'logs'));
   logger = appLogger.logger;
-  configStore = new WorkspaceConfigStore(join(appData, 'config.json'));
+  configStore = new WorkspaceConfigStore(applicationConfigPath(appData));
   workspaceConfig = configStore.read();
   ptyManager = new PtyManager({
     logger,
@@ -325,7 +352,7 @@ app.whenReady().then(() => {
       workspaceConfig = restored;
       bootstrapWorkspace(restored.harnessHome as string);
     } catch (error) {
-      logger.error({ error }, 'Failed to restore the Foundry workspace');
+      logger.error({ error }, 'Failed to restore the Relay workspace');
       workspaceConfig = { ...EMPTY_WORKSPACE };
     }
   }
@@ -337,7 +364,7 @@ app.whenReady().then(() => {
     configured: workspaceConfig.onboardingComplete,
     harnessHome: workspaceConfig.harnessHome,
     projectPath: workspaceConfig.projectPath
-  }, 'Foundry started');
+  }, 'Relay started');
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();

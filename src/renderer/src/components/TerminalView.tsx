@@ -68,7 +68,7 @@ export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapsho
     let replayReady = false;
     let lastSequence = 0;
     const pending: TerminalDataEvent[] = [];
-    const unsubscribeData = window.foundry.onTerminalData((event) => {
+    const unsubscribeData = window.relay.onTerminalData((event) => {
       if (event.id !== snapshot.id) return;
       if (!replayReady) {
         pending.push(event);
@@ -78,13 +78,13 @@ export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapsho
       terminal.write(event.data);
       lastSequence = event.sequence;
     });
-    const unsubscribeExit = window.foundry.onTerminalExit((event) => {
+    const unsubscribeExit = window.relay.onTerminalExit((event) => {
       if (event.id !== snapshot.id) return;
       terminal.write(`\r\n\x1b[90m[process exited ${event.exitCode}]\x1b[0m\r\n`);
     });
 
     const input = terminal.onData((data) => {
-      void window.foundry.writeTerminal(snapshot.id, data).then((result) => {
+      void window.relay.writeTerminal(snapshot.id, data).then((result) => {
         if (!result.ok) terminal.write(`\r\n\x1b[31m[input failed: ${result.error}]\x1b[0m\r\n`);
       });
     });
@@ -93,7 +93,7 @@ export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapsho
       if (host.clientWidth <= 0 || host.clientHeight <= 0) return;
       try {
         fit.fit();
-        void window.foundry.resizeTerminal(snapshot.id, terminal.cols, terminal.rows);
+        void window.relay.resizeTerminal(snapshot.id, terminal.cols, terminal.rows);
       } catch {
         // The host may be between layout passes.
       }
@@ -105,7 +105,7 @@ export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapsho
       terminal.focus();
     });
 
-    void window.foundry.getTerminalReplay(snapshot.id).then((replay) => {
+    void window.relay.getTerminalReplay(snapshot.id).then((replay) => {
       terminal.write(replay.data);
       lastSequence = replay.lastSequence;
       replayReady = true;

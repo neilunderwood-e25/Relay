@@ -1,6 +1,6 @@
-# Foundry Harness
+# Relay Harness
 
-Foundry is a local-first desktop multi-agent coding harness. Michael is the default orchestrator; Claude Code and Codex CLI workers operate in isolated Git worktrees on one coding project. The orchestrator name can be changed in the app.
+Relay is a local-first desktop multi-agent coding harness. Michael is the default orchestrator; Claude Code and Codex CLI workers operate in isolated Git worktrees on one coding project. The orchestrator name can be changed in the app.
 
 The current implementation includes **Milestone 01: technical foundation**, **Milestone 02: terminal plane**, **Milestone 03: Git worktree plane**, and **Milestone 04: orchestration core**. Michael accepts one objective, decomposes it across available CLI workers, provisions isolated worktrees, runs Claude Code and Codex non-interactively, and persists the complete run lifecycle.
 
@@ -55,11 +55,11 @@ The renderer has no direct Node access. Filesystem, database, Git, PTY, and prov
 
 ## Orchestrator hive
 
-On first launch, Foundry starts with no project selected. Its startup wizard asks for a Harness Home and a Git project. Foundry keeps only that selection in application data; the operational workspace is created in the chosen Harness Home:
+On first launch, Relay starts with no project selected. Its startup wizard asks for a Harness Home and a Git project. Relay keeps only that selection in application data; the operational workspace is created in the chosen Harness Home:
 
 ```text
 Harness Home/
-  foundry.db
+  relay.db
   worktrees/
   hive/
     PROTOCOL.md
@@ -102,7 +102,7 @@ Michael's identity is refreshed by the harness while `memory.md` is never overwr
 - Split mode turns newline or semicolon-separated instructions into parallel workstreams.
 - Audit mode asks each worker for an independent, evidence-backed investigation.
 - Every task carries an explicit role, assignment, and expected deliverable.
-- Every task receives a dedicated `foundry/orchestrator-*` branch and managed worktree.
+- Every task receives a dedicated `relay/orchestrator-*` branch and managed worktree.
 - Claude runs in non-interactive edit-accepting mode; Codex runs in a workspace-write sandbox with approvals disabled inside its isolated checkout.
 - Run and task states are persisted in SQLite and interrupted work is surfaced as blocked after restart.
 - Runs support bounded concurrency, stop, and task retry.

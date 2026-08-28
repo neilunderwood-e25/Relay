@@ -40,7 +40,7 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
     setLoading(true);
     setError(null);
     try {
-      const snapshot = await window.foundry.inspectRepository(cwd);
+      const snapshot = await window.relay.inspectRepository(cwd);
       setRepository(snapshot);
       setBaseBranch((current) => snapshot.branches.includes(current)
         ? current
@@ -61,7 +61,7 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
     setBusy('create');
     setError(null);
     try {
-      await window.foundry.createWorktree({
+      await window.relay.createWorktree({
         repoPath: cwd,
         name: name.trim(),
         baseBranch: baseBranch || undefined
@@ -79,7 +79,7 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
     setBusy(worktree.id);
     setError(null);
     try {
-      const result = await window.foundry.removeWorktree({ id: worktree.id });
+      const result = await window.relay.removeWorktree({ id: worktree.id });
       if (!result.ok) throw new Error(result.error ?? 'Worktree removal failed.');
       await refresh();
     } catch (cause) {
@@ -178,7 +178,7 @@ function WorktreeCard({ worktree, providers, busy, onLaunch, onRemove }: {
   onLaunch: (provider: ProviderId, cwd: string, label: string) => Promise<void>;
   onRemove: (worktree: WorktreeSnapshot) => Promise<void>;
 }): React.JSX.Element {
-  const label = worktree.isMain ? 'Main checkout' : worktree.branch.replace(/^foundry\//, '');
+  const label = worktree.isMain ? 'Main checkout' : worktree.branch.replace(/^(?:relay|foundry)\//, '');
   const unavailable = worktree.status === 'missing' || worktree.status === 'locked';
   const removeLabel = worktree.status === 'missing'
     ? 'Forget worktree'

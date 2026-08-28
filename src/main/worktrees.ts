@@ -11,7 +11,7 @@ import type {
   WorktreeRemoveRequest,
   WorktreeSnapshot
 } from '../shared/contracts';
-import type { FoundryDatabase } from './database';
+import type { RelayDatabase } from './database';
 
 const MAX_GIT_OUTPUT = 2 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 20_000;
@@ -33,7 +33,7 @@ interface PorcelainWorktree {
 }
 
 export interface WorktreeManagerOptions {
-  database: FoundryDatabase;
+  database: RelayDatabase;
   logger: Logger;
   storageRoot: string;
 }
@@ -133,7 +133,7 @@ export class WorktreeManager {
     }
 
     const slug = name.toLowerCase();
-    const branch = `foundry/${slug}`;
+    const branch = `relay/${slug}`;
     const baseBranch = request.baseBranch?.trim() || repository.currentBranch || 'HEAD';
     if (!isSafeRef(baseBranch) || (!repository.branches.includes(baseBranch) && baseBranch !== 'HEAD')) {
       throw new Error('Choose a valid local base branch.');

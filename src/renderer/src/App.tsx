@@ -22,7 +22,7 @@ import { Button } from './components/ui/Button';
 import { Icon } from './components/ui/Icon';
 import { Tooltip, TooltipProvider } from './components/ui/Tooltip';
 import { useTerminalStore } from './store/terminals';
-import foundryLogo from './assets/foundry-logo.svg';
+import relayLogo from './assets/relay-logo.svg';
 
 type LoadState =
   | { status: 'loading' }
@@ -46,8 +46,8 @@ export function App(): React.JSX.Element {
   const load = useCallback(async () => {
     try {
       const [snapshot, activeTerminals] = await Promise.all([
-        window.foundry.getSnapshot(),
-        window.foundry.listTerminals()
+        window.relay.getSnapshot(),
+        window.relay.listTerminals()
       ]);
       hydrate(activeTerminals);
       setCwd(snapshot.defaultWorkingDirectory);
@@ -63,22 +63,22 @@ export function App(): React.JSX.Element {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
-    const unsubscribeData = window.foundry.onTerminalData(markOutput);
-    const unsubscribeExit = window.foundry.onTerminalExit(markExited);
+    const unsubscribeData = window.relay.onTerminalData(markOutput);
+    const unsubscribeExit = window.relay.onTerminalExit(markExited);
     return () => {
       unsubscribeData();
       unsubscribeExit();
     };
   }, [markExited, markOutput]);
 
-  useEffect(() => window.foundry.onOrchestrationUpdate(() => {
-    void window.foundry.listTerminals().then(hydrate);
+  useEffect(() => window.relay.onOrchestrationUpdate(() => {
+    void window.relay.listTerminals().then(hydrate);
   }), [hydrate]);
 
   const refreshProviders = async (): Promise<void> => {
     if (state.status !== 'ready') return;
     try {
-      const providers = await window.foundry.refreshProviders();
+      const providers = await window.relay.refreshProviders();
       setState({ status: 'ready', snapshot: { ...state.snapshot, providers } });
     } catch (error) {
       setTerminalError(error instanceof Error ? error.message : String(error));
@@ -88,7 +88,7 @@ export function App(): React.JSX.Element {
   const renameOrchestrator = async (name: string): Promise<boolean> => {
     if (state.status !== 'ready') return false;
     try {
-      const snapshot = await window.foundry.renameOrchestrator({ name });
+      const snapshot = await window.relay.renameOrchestrator({ name });
       setState({ status: 'ready', snapshot });
       return true;
     } catch (error) {
@@ -99,9 +99,9 @@ export function App(): React.JSX.Element {
 
   const chooseDirectory = async (): Promise<void> => {
     try {
-      const selected = await window.foundry.chooseDirectory('project');
+      const selected = await window.relay.chooseDirectory('project');
       if (!selected || state.status !== 'ready' || !state.snapshot.workspace.harnessHome) return;
-      const snapshot = await window.foundry.configureWorkspace({
+      const snapshot = await window.relay.configureWorkspace({
         harnessHome: state.snapshot.workspace.harnessHome,
         projectPath: selected
       });
@@ -124,8 +124,10 @@ export function App(): React.JSX.Element {
     setLaunching(provider);
     setTerminalError(null);
     try {
-      const ordinal = terminals.filter((terminal) => terminal.provider === provider).length + 1;
-      const terminal = await window.foundry.spawnTerminal({
+      const ordinal = terminals.filter(
+        (terminal) => terminal.role !== 'orchestrator' && terminal.provider === provider
+      ).length + 1;
+      const terminal = await window.relay.spawnTerminal({
         provider,
         cwd: workingDirectory.trim(),
         name: worktreeLabel
@@ -146,7 +148,7 @@ export function App(): React.JSX.Element {
 
   const openTerminal = async (terminalId: string): Promise<void> => {
     try {
-      const activeTerminals = await window.foundry.listTerminals();
+      const activeTerminals = await window.relay.listTerminals();
       hydrate(activeTerminals);
       if (activeTerminals.some((terminal) => terminal.id === terminalId)) selectTerminal(terminalId);
       setActiveView('console');
@@ -172,7 +174,7 @@ export function App(): React.JSX.Element {
   if (!snapshot.workspace.onboardingComplete) {
     return (
       <TooltipProvider delayDuration={250}>
-        <div className="foundry-shell">
+        <div className="relay-shell">
           <AppTitlebar snapshot={snapshot} projectName="No project" />
           <StartupWizard onComplete={(configured) => {
             setCwd(configured.defaultWorkingDirectory);
@@ -183,12 +185,14 @@ export function App(): React.JSX.Element {
     );
   }
 
-  const runningCount = terminals.filter((terminal) => terminal.status !== 'exited').length;
+  const runningCount = terminals.filter(
+    (terminal) => terminal.role !== 'orchestrator' && terminal.status !== 'exited'
+  ).length;
   const projectName = projectNameFromPath(cwd);
 
   return (
     <TooltipProvider delayDuration={250}>
-      <div className="foundry-shell">
+      <div className="relay-shell">
         <AppTitlebar snapshot={snapshot} projectName={projectName} />
 
         <div className="application-body">
@@ -271,12 +275,12 @@ function AppTitlebar({ snapshot, projectName }: {
   return (
     <header className="app-titlebar">
       <div className="brand-block">
-        <Tooltip content="Foundry" side="bottom">
+        <Tooltip content="Relay" side="bottom">
           <span className="titlebar-icon-target">
-            <img className="brand-logo" src={foundryLogo} alt="Foundry" />
+            <img className="brand-logo" src={relayLogo} alt="Relay" />
           </span>
         </Tooltip>
-        <strong>Foundry</strong>
+        <strong>Relay</strong>
       </div>
       <div className="titlebar-project">
         <Tooltip content="Current project" side="bottom">
@@ -324,7 +328,7 @@ function ProviderButton({ provider, launching, disabled, onClick }: {
 function LoadingScreen(): React.JSX.Element {
   return (
     <main className="center-state loading-state">
-      <img className="brand-logo loading-brand" src={foundryLogo} alt="Foundry" />
+      <img className="brand-logo loading-brand" src={relayLogo} alt="Relay" />
       <span className="loading-line" />
     </main>
   );

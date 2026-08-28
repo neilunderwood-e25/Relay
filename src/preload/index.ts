@@ -1,13 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
-  FoundryApi,
+  RelayApi,
   OrchestrationSnapshot,
   TerminalDataEvent,
   TerminalExitEvent
 } from '../shared/contracts';
 import { IPC } from '../shared/ipc';
 
-const api: FoundryApi = {
+const api: RelayApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.appSnapshot),
   refreshProviders: () => ipcRenderer.invoke(IPC.providersRefresh),
   chooseDirectory: (purpose) => ipcRenderer.invoke(IPC.chooseDirectory, purpose),
@@ -45,4 +45,4 @@ const api: FoundryApi = {
   }
 };
 
-contextBridge.exposeInMainWorld('foundry', api);
+contextBridge.exposeInMainWorld('relay', api);
