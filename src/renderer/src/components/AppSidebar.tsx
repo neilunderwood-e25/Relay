@@ -73,12 +73,6 @@ export function AppSidebar({ activeView, orchestratorName, onNavigate, onChooseD
       </nav>
 
       <div className="sidebar-footer">
-        <Tooltip content="Agent online" side="right">
-          <div className="rehan-avatar" aria-label={`${orchestratorName} orchestrator`}>
-            <Icon icon={Robot01Icon} size={17} />
-            <span className="online-dot" />
-          </div>
-        </Tooltip>
         <Tooltip content="Settings" side="right">
           <span className="disabled-tooltip-target">
             <Button variant="ghost" size="icon" className="sidebar-nav-button" disabled aria-label="Settings">

@@ -1,13 +1,21 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_ORCHESTRATOR_NAME, type WorkspaceConfig } from '../shared/contracts';
+import {
+  DEFAULT_ORCHESTRATOR_NAME,
+  PROVIDER_IDS,
+  type ProviderId,
+  type WorkspaceConfig
+} from '../shared/contracts';
+import { DEFAULT_ORCHESTRATOR_PROVIDER, isOrchestratorModel } from '../shared/orchestratorModels';
 
 const DEFAULT_CONFIG: WorkspaceConfig = {
   onboardingComplete: false,
   harnessHome: null,
   projectPath: null,
-  orchestratorName: DEFAULT_ORCHESTRATOR_NAME
+  orchestratorName: DEFAULT_ORCHESTRATOR_NAME,
+  orchestratorProvider: DEFAULT_ORCHESTRATOR_PROVIDER,
+  orchestratorModel: null
 };
 
 export class WorkspaceConfigStore {
@@ -22,11 +30,19 @@ export class WorkspaceConfigStore {
       const orchestratorName = validName(parsed.orchestratorName)
         ? parsed.orchestratorName.trim()
         : DEFAULT_ORCHESTRATOR_NAME;
+      const orchestratorProvider = validProvider(parsed.orchestratorProvider)
+        ? parsed.orchestratorProvider
+        : DEFAULT_ORCHESTRATOR_PROVIDER;
+      const orchestratorModel = isOrchestratorModel(orchestratorProvider, parsed.orchestratorModel)
+        ? parsed.orchestratorModel
+        : null;
       return {
         onboardingComplete: parsed.onboardingComplete === true && !!harnessHome && !!projectPath,
         harnessHome,
         projectPath,
-        orchestratorName
+        orchestratorName,
+        orchestratorProvider,
+        orchestratorModel
       };
     } catch {
       return { ...DEFAULT_CONFIG };
@@ -48,4 +64,8 @@ function validPath(value: unknown): value is string {
 
 function validName(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 32;
+}
+
+function validProvider(value: unknown): value is ProviderId {
+  return typeof value === 'string' && PROVIDER_IDS.includes(value as ProviderId);
 }

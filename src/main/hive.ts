@@ -11,8 +11,11 @@ import { randomUUID } from 'node:crypto';
 import type {
   HiveHealth,
   OrchestrationSnapshot,
-  OrchestrationTaskStatus
+  OrchestrationTaskStatus,
+  ProviderId
 } from '../shared/contracts';
+import { personNameForSeed } from '../shared/agentIdentity';
+import { orchestratorModelLabel } from '../shared/orchestratorModels';
 
 interface HiveRegistry {
   version: 1;
@@ -80,7 +83,12 @@ export class HiveManager {
   private error: string | undefined;
   private currentStatus: 'idle' | 'working' | 'blocked' = 'idle';
 
-  constructor(readonly root: string, private orchestratorName: string) {}
+  constructor(
+    readonly root: string,
+    private orchestratorName: string,
+    private orchestratorProvider: ProviderId = 'claude',
+    private orchestratorModel: string | null = null
+  ) {}
 
   get agentRoot(): string {
     return join(this.root, 'agents', 'orchestrator');
@@ -109,6 +117,8 @@ export class HiveManager {
           `# ${this.orchestratorName}`,
           '',
           '- Role: Relay orchestrator',
+          `- Engine: ${this.orchestratorProvider === 'claude' ? 'Claude Code' : 'Codex CLI'}`,
+          `- Model: ${orchestratorModelLabel(this.orchestratorProvider, this.orchestratorModel)}`,
           '- Owns: decomposition, assignment, task tracking, integration decisions, and final QA',
           '- Delegates implementation to CLI workers in isolated Git worktrees',
           '- Shared hive: ../../',
@@ -145,6 +155,8 @@ export class HiveManager {
         `# ${this.orchestratorName}`,
         '',
         '- Role: Relay orchestrator',
+        `- Engine: ${this.orchestratorProvider === 'claude' ? 'Claude Code' : 'Codex CLI'}`,
+        `- Model: ${orchestratorModelLabel(this.orchestratorProvider, this.orchestratorModel)}`,
         '- Owns: decomposition, assignment, task tracking, integration decisions, and final QA',
         '- Delegates implementation to CLI workers in isolated Git worktrees',
         '- Shared hive: ../../',
@@ -166,7 +178,7 @@ export class HiveManager {
       title: task.title,
       description: task.instructions,
       deliverable: task.deliverable,
-      assignee: task.provider,
+      assignee: personNameForSeed(task.id),
       provider: task.provider,
       role: task.role,
       status: ledgerStatus(task.status),

@@ -25,7 +25,9 @@ describe('WorkspaceConfigStore', () => {
       onboardingComplete: false,
       harnessHome: null,
       projectPath: null,
-      orchestratorName: 'Michael'
+      orchestratorName: 'Michael',
+      orchestratorProvider: 'claude',
+      orchestratorModel: null
     });
     expect(existsSync(store.path)).toBe(false);
   });
@@ -36,7 +38,9 @@ describe('WorkspaceConfigStore', () => {
       onboardingComplete: true,
       harnessHome: '/tmp/relay-home',
       projectPath: '/tmp/coding-project',
-      orchestratorName: 'Michael'
+      orchestratorName: 'Michael',
+      orchestratorProvider: 'codex' as const,
+      orchestratorModel: 'gpt-5.6-sol'
     };
     expect(store.write(config)).toEqual(config);
     expect(store.read()).toEqual(config);
@@ -45,7 +49,14 @@ describe('WorkspaceConfigStore', () => {
 
   it('returns onboarding for incomplete or malformed configuration', () => {
     const { store } = fixture();
-    store.write({ onboardingComplete: true, harnessHome: '/tmp/home', projectPath: '/tmp/project', orchestratorName: 'Michael' });
+    store.write({
+      onboardingComplete: true,
+      harnessHome: '/tmp/home',
+      projectPath: '/tmp/project',
+      orchestratorName: 'Michael',
+      orchestratorProvider: 'claude',
+      orchestratorModel: null
+    });
     writeFileSync(store.path, '{broken', 'utf8');
     expect(store.read().onboardingComplete).toBe(false);
 
@@ -54,7 +65,33 @@ describe('WorkspaceConfigStore', () => {
       onboardingComplete: false,
       harnessHome: '/tmp/home',
       projectPath: null,
-      orchestratorName: 'Michael'
+      orchestratorName: 'Michael',
+      orchestratorProvider: 'claude',
+      orchestratorModel: null
+    });
+  });
+
+  it('migrates invalid engine settings to safe defaults', () => {
+    const { store } = fixture();
+    store.write({
+      onboardingComplete: true,
+      harnessHome: '/tmp/home',
+      projectPath: '/tmp/project',
+      orchestratorName: 'Michael',
+      orchestratorProvider: 'claude',
+      orchestratorModel: null
+    });
+    writeFileSync(store.path, JSON.stringify({
+      onboardingComplete: true,
+      harnessHome: '/tmp/home',
+      projectPath: '/tmp/project',
+      orchestratorProvider: 'unknown',
+      orchestratorModel: 'not-a-model'
+    }), 'utf8');
+
+    expect(store.read()).toMatchObject({
+      orchestratorProvider: 'claude',
+      orchestratorModel: null
     });
   });
 });

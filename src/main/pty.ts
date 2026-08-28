@@ -13,6 +13,7 @@ import type {
   TerminalSnapshot,
   TerminalSpawnRequest
 } from '../shared/contracts';
+import { personNameForSeed } from '../shared/agentIdentity';
 import { resolveExecutable } from './providers';
 import { TerminalBuffer } from './terminalBuffer';
 
@@ -91,7 +92,8 @@ export class PtyManager {
       snapshot: {
         id,
         role: request.role ?? 'worker',
-        name: cleanName(request.name) || `${request.provider === 'claude' ? 'Claude' : 'Codex'} terminal`,
+        avatarSeed: cleanSeed(request.avatarSeed) || id,
+        name: cleanName(request.name) || personNameForSeed(id),
         provider: request.provider,
         command: executable,
         cwd,
@@ -268,6 +270,9 @@ export class PtyManager {
     if (request.role !== undefined && !['worker', 'orchestrator'].includes(request.role)) {
       throw new Error('Unsupported terminal role.');
     }
+    if (request.avatarSeed !== undefined && (typeof request.avatarSeed !== 'string' || request.avatarSeed.length > 128)) {
+      throw new Error('Avatar seeds must be at most 128 characters.');
+    }
     if (request.args !== undefined) {
       if (!Array.isArray(request.args) || request.args.length > 64) throw new Error('Too many terminal arguments.');
       if (request.args.some((arg) => typeof arg !== 'string' || arg.length > 4096)) {
@@ -295,4 +300,8 @@ function clampDimension(value: number | undefined, fallback: number, min: number
 
 function cleanName(value: string | undefined): string {
   return (value ?? '').trim().replace(/[\r\n\t]+/g, ' ').slice(0, 80);
+}
+
+function cleanSeed(value: string | undefined): string {
+  return (value ?? '').trim().replace(/[\r\n\t]+/g, '-').slice(0, 128);
 }

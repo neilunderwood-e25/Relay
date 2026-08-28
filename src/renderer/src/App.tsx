@@ -31,6 +31,7 @@ type LoadState =
 
 export function App(): React.JSX.Element {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
+  const [startupVerified, setStartupVerified] = useState(false);
   const [cwd, setCwd] = useState('');
   const [activeView, setActiveView] = useState<AppView>('rehan');
   const [launching, setLaunching] = useState<ProviderId | null>(null);
@@ -103,7 +104,9 @@ export function App(): React.JSX.Element {
       if (!selected || state.status !== 'ready' || !state.snapshot.workspace.harnessHome) return;
       const snapshot = await window.relay.configureWorkspace({
         harnessHome: state.snapshot.workspace.harnessHome,
-        projectPath: selected
+        projectPath: selected,
+        orchestratorProvider: state.snapshot.workspace.orchestratorProvider,
+        orchestratorModel: state.snapshot.workspace.orchestratorModel
       });
       setCwd(snapshot.defaultWorkingDirectory);
       setState({ status: 'ready', snapshot });
@@ -114,8 +117,7 @@ export function App(): React.JSX.Element {
 
   const launch = async (
     provider: ProviderId,
-    workingDirectory = cwd,
-    worktreeLabel?: string
+    workingDirectory = cwd
   ): Promise<boolean> => {
     if (!workingDirectory.trim()) {
       setTerminalError('Choose a project first.');
@@ -124,15 +126,9 @@ export function App(): React.JSX.Element {
     setLaunching(provider);
     setTerminalError(null);
     try {
-      const ordinal = terminals.filter(
-        (terminal) => terminal.role !== 'orchestrator' && terminal.provider === provider
-      ).length + 1;
       const terminal = await window.relay.spawnTerminal({
         provider,
         cwd: workingDirectory.trim(),
-        name: worktreeLabel
-          ? `${DEFAULT_AGENT_NAMES[provider]} · ${worktreeLabel}`.slice(0, 80)
-          : `${DEFAULT_AGENT_NAMES[provider]} ${ordinal}`,
         cols: 120,
         rows: 32
       });
@@ -171,14 +167,18 @@ export function App(): React.JSX.Element {
   }
 
   const { snapshot } = state;
-  if (!snapshot.workspace.onboardingComplete) {
+  if (!startupVerified) {
     return (
       <TooltipProvider delayDuration={250}>
         <div className="relay-shell">
-          <AppTitlebar snapshot={snapshot} projectName="No project" />
-          <StartupWizard onComplete={(configured) => {
+          <AppTitlebar
+            snapshot={snapshot}
+            projectName={projectNameFromPath(snapshot.workspace.projectPath ?? '')}
+          />
+          <StartupWizard snapshot={snapshot} onComplete={(configured) => {
             setCwd(configured.defaultWorkingDirectory);
             setState({ status: 'ready', snapshot: configured });
+            setStartupVerified(true);
           }} />
         </div>
       </TooltipProvider>
@@ -209,6 +209,8 @@ export function App(): React.JSX.Element {
                 cwd={cwd}
                 providers={snapshot.providers}
                 orchestratorName={snapshot.workspace.orchestratorName}
+                orchestratorProvider={snapshot.workspace.orchestratorProvider}
+                orchestratorModel={snapshot.workspace.orchestratorModel}
                 onRenameOrchestrator={renameOrchestrator}
                 onChooseDirectory={() => void chooseDirectory()}
                 onOpenTerminal={(terminalId) => void openTerminal(terminalId)}
@@ -256,8 +258,8 @@ export function App(): React.JSX.Element {
                 cwd={cwd}
                 providers={snapshot.providers}
                 onChooseDirectory={() => void chooseDirectory()}
-                onLaunch={async (provider, worktreeCwd, label) => {
-                  if (await launch(provider, worktreeCwd, label)) setActiveView('console');
+                onLaunch={async (provider, worktreeCwd) => {
+                  if (await launch(provider, worktreeCwd)) setActiveView('console');
                 }}
               />
             )}

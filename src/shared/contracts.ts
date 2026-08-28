@@ -36,6 +36,8 @@ export interface WorkspaceConfig {
   harnessHome: string | null;
   projectPath: string | null;
   orchestratorName: string;
+  orchestratorProvider: ProviderId;
+  orchestratorModel: string | null;
 }
 
 export interface AppSnapshot {
@@ -56,6 +58,7 @@ export type TerminalRole = 'worker' | 'orchestrator';
 export interface TerminalSpawnRequest {
   provider: ProviderId;
   role?: TerminalRole;
+  avatarSeed?: string;
   name?: string;
   cwd: string;
   cols?: number;
@@ -66,6 +69,7 @@ export interface TerminalSpawnRequest {
 export interface TerminalSnapshot {
   id: string;
   role?: TerminalRole;
+  avatarSeed?: string;
   name: string;
   provider: ProviderId;
   command: string;
@@ -153,6 +157,8 @@ export interface WorktreeRemoveRequest {
 export interface WorkspaceConfigureRequest {
   harnessHome: string;
   projectPath: string;
+  orchestratorProvider: ProviderId;
+  orchestratorModel: string | null;
 }
 
 export interface OrchestratorRenameRequest {

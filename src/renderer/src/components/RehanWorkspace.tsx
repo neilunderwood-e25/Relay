@@ -20,7 +20,6 @@ import {
   WorkflowIcon
 } from '@hugeicons/core-free-icons';
 import {
-  DEFAULT_AGENT_NAMES,
   type OrchestrationSnapshot,
   type OrchestrationStrategy,
   type OrchestrationTask,
@@ -28,7 +27,9 @@ import {
   type ProviderId,
   type RepositorySnapshot
 } from '../../../shared/contracts';
+import { personNameForSeed } from '../../../shared/agentIdentity';
 import { planObjective } from '../../../shared/orchestration';
+import { AgentAvatar } from './AgentAvatar';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
 import { Card, CardContent, CardHeader } from './ui/Card';
@@ -45,15 +46,32 @@ const STRATEGIES: Array<{
   tooltip: string;
   icon: typeof WorkflowIcon;
 }> = [
-  { id: 'balanced', label: 'Build', tooltip: 'Build mode', icon: WorkflowIcon },
-  { id: 'parallel', label: 'Split', tooltip: 'Split mode', icon: Layers01Icon },
-  { id: 'audit', label: 'Audit', tooltip: 'Audit mode', icon: Audit01Icon }
+  {
+    id: 'balanced',
+    label: 'Build',
+    tooltip: 'Assign an implementation owner and an independent reviewer',
+    icon: WorkflowIcon
+  },
+  {
+    id: 'parallel',
+    label: 'Split',
+    tooltip: 'Turn separate instructions into parallel workstreams',
+    icon: Layers01Icon
+  },
+  {
+    id: 'audit',
+    label: 'Audit',
+    tooltip: 'Ask each worker for an independent, evidence-backed investigation',
+    icon: Audit01Icon
+  }
 ];
 
 export function RehanWorkspace({
   cwd,
   providers,
   orchestratorName,
+  orchestratorProvider,
+  orchestratorModel,
   onRenameOrchestrator,
   onChooseDirectory,
   onOpenTerminal
@@ -61,6 +79,8 @@ export function RehanWorkspace({
   cwd: string;
   providers: ProviderCapability[];
   orchestratorName: string;
+  orchestratorProvider: ProviderId;
+  orchestratorModel: string | null;
   onRenameOrchestrator: (name: string) => Promise<boolean>;
   onChooseDirectory: () => void;
   onOpenTerminal: (terminalId: string) => void;
@@ -190,6 +210,7 @@ export function RehanWorkspace({
     <section className="rehan-workspace">
       <header className="dashboard-header">
         <div className="dashboard-title">
+          <AgentAvatar seed="relay-orchestrator" name={orchestratorName} className="orchestrator-heading-avatar" />
           {editingName ? (
             <div className="orchestrator-name-editor">
               <Input
@@ -251,7 +272,13 @@ export function RehanWorkspace({
       {error && <div className="worktree-error" role="alert"><Icon icon={Alert02Icon} size={15} />{error}</div>}
 
       {workspaceMode === 'terminal' ? (
-        <OrchestratorTerminal cwd={cwd} name={orchestratorName} providers={providers} />
+        <OrchestratorTerminal
+          cwd={cwd}
+          name={orchestratorName}
+          providers={providers}
+          orchestratorProvider={orchestratorProvider}
+          orchestratorModel={orchestratorModel}
+        />
       ) : !loading && !repository?.isRepository ? (
         <Card className="worktree-empty-card">
           <CardContent className="worktree-empty-content">
@@ -266,16 +293,58 @@ export function RehanWorkspace({
             <Card className="rehan-command-card">
               <CardContent className="rehan-command-content">
                 <div className="rehan-objective-row">
-                  <span className="rehan-command-icon"><Icon icon={Robot01Icon} size={19} /></span>
                   <RichTextEditor
                     value={objective}
                     disabled={busy || loading}
                     onChange={setObjective}
                     onSubmit={() => void start()}
                   />
+                </div>
+
+                <div className="rehan-command-options">
+                  <div className="rehan-command-settings">
+                    <div className="rehan-strategy-switch" aria-label="Run mode">
+                      {STRATEGIES.map((option) => (
+                        <Tooltip key={option.id} content={option.tooltip}>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={strategy === option.id ? 'secondary' : 'ghost'}
+                            className={strategy === option.id ? 'selected' : ''}
+                            aria-pressed={strategy === option.id}
+                            onClick={() => setStrategy(option.id)}
+                          >
+                            <Icon icon={option.icon} size={13} /> {option.label}
+                          </Button>
+                        </Tooltip>
+                      ))}
+                    </div>
+                    <div className="rehan-provider-switch" aria-label="Workers">
+                      {providers.map((provider) => {
+                        const selected = selectedProviders.includes(provider.id);
+                        return (
+                          <Tooltip key={provider.id} content={provider.id === 'claude' ? 'Claude CLI' : 'Codex CLI'}>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant={selected ? 'secondary' : 'ghost'}
+                              className={`provider-toggle ${provider.id} ${selected ? 'selected' : ''}`}
+                              aria-label={provider.id === 'claude' ? 'Claude CLI' : 'Codex CLI'}
+                              aria-pressed={selected}
+                              disabled={!provider.available}
+                              onClick={() => toggleProvider(provider.id)}
+                            >
+                              <Icon icon={provider.id === 'claude' ? ClaudeIcon : ChatGptIcon} size={14} />
+                            </Button>
+                          </Tooltip>
+                        );
+                      })}
+                    </div>
+                  </div>
                   <Tooltip content="Start run">
                     <span className="disabled-tooltip-target">
                       <Button
+                        className="rehan-run-button"
                         aria-label="Start run"
                         disabled={!objective.trim() || busy || loading || selectedProviders.length === 0}
                         onClick={() => void start()}
@@ -284,46 +353,6 @@ export function RehanWorkspace({
                       </Button>
                     </span>
                   </Tooltip>
-                </div>
-
-                <div className="rehan-command-options">
-                  <div className="rehan-strategy-switch" aria-label="Run mode">
-                    {STRATEGIES.map((option) => (
-                      <Tooltip key={option.id} content={option.tooltip}>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant={strategy === option.id ? 'secondary' : 'ghost'}
-                          className={strategy === option.id ? 'selected' : ''}
-                          aria-pressed={strategy === option.id}
-                          onClick={() => setStrategy(option.id)}
-                        >
-                          <Icon icon={option.icon} size={13} /> {option.label}
-                        </Button>
-                      </Tooltip>
-                    ))}
-                  </div>
-                  <div className="rehan-provider-switch" aria-label="Workers">
-                    {providers.map((provider) => {
-                      const selected = selectedProviders.includes(provider.id);
-                      return (
-                        <Tooltip key={provider.id} content={provider.id === 'claude' ? 'Claude CLI' : 'Codex CLI'}>
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant={selected ? 'secondary' : 'ghost'}
-                            className={`provider-toggle ${provider.id} ${selected ? 'selected' : ''}`}
-                            aria-label={provider.id === 'claude' ? 'Claude CLI' : 'Codex CLI'}
-                            aria-pressed={selected}
-                            disabled={!provider.available}
-                            onClick={() => toggleProvider(provider.id)}
-                          >
-                            <Icon icon={provider.id === 'claude' ? ClaudeIcon : ChatGptIcon} size={14} />
-                          </Button>
-                        </Tooltip>
-                      );
-                    })}
-                  </div>
                 </div>
 
                 {preview.length > 0 && (
@@ -419,13 +448,14 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal }: {
               className={`rehan-task-card ${selectedTask?.id === task.id ? 'selected' : ''}`}
               onClick={() => setSelectedTaskId(task.id)}
             >
+              <AgentAvatar seed={task.id} name={personNameForSeed(task.id)} className="task-agent-avatar" />
               <span className={`rehan-task-provider ${task.provider}`}>
                 <Icon icon={task.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={13} />
               </span>
               <span className="rehan-task-card-copy">
                 <small>{roleLabel(task.role)}</small>
                 <strong>{task.title}</strong>
-                <span>{DEFAULT_AGENT_NAMES[task.provider]} · {task.deliverable}</span>
+                <span>{personNameForSeed(task.id)} · {task.deliverable}</span>
               </span>
               <span className={`task-state ${task.status}`} />
             </button>

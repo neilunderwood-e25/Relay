@@ -14,8 +14,12 @@ import type {
   WorktreeCreateRequest,
   WorktreeRemoveRequest
 } from '../shared/contracts';
-import { DEFAULT_ORCHESTRATOR_NAME } from '../shared/contracts';
+import { DEFAULT_ORCHESTRATOR_NAME, PROVIDER_IDS, type ProviderId } from '../shared/contracts';
 import { IPC } from '../shared/ipc';
+import {
+  DEFAULT_ORCHESTRATOR_PROVIDER,
+  isOrchestratorModel
+} from '../shared/orchestratorModels';
 import { WorkspaceConfigStore } from './config';
 import { RelayDatabase } from './database';
 import { HiveManager } from './hive';
@@ -31,7 +35,9 @@ const EMPTY_WORKSPACE: WorkspaceConfig = {
   onboardingComplete: false,
   harnessHome: null,
   projectPath: null,
-  orchestratorName: DEFAULT_ORCHESTRATOR_NAME
+  orchestratorName: DEFAULT_ORCHESTRATOR_NAME,
+  orchestratorProvider: DEFAULT_ORCHESTRATOR_PROVIDER,
+  orchestratorModel: null
 };
 
 let mainWindow: BrowserWindow | null = null;
@@ -101,12 +107,19 @@ async function buildAppSnapshot(): Promise<AppSnapshot> {
   };
 }
 
-function bootstrapWorkspace(harnessHome: string): void {
+function bootstrapWorkspace(config: WorkspaceConfig): void {
   if (database && hive && worktreeManager && rehan) return;
   if (!logger || !ptyManager) throw new Error('Relay is not ready yet.');
+  if (!config.harnessHome) throw new Error('Choose a Harness Home.');
 
+  const harnessHome = config.harnessHome;
   const nextDatabase = new RelayDatabase(migrateLegacyDatabase(harnessHome));
-  const nextHive = new HiveManager(join(harnessHome, 'hive'), workspaceConfig.orchestratorName);
+  const nextHive = new HiveManager(
+    join(harnessHome, 'hive'),
+    config.orchestratorName,
+    config.orchestratorProvider,
+    config.orchestratorModel
+  );
   try {
     nextDatabase.open();
     const hiveHealth = nextHive.ensure();
@@ -155,6 +168,14 @@ function validateWorkspace(request: WorkspaceConfigureRequest): WorkspaceConfig 
     throw new Error('Choose a Harness Home and Git project.');
   }
 
+  const orchestratorProvider = request.orchestratorProvider;
+  if (!PROVIDER_IDS.includes(orchestratorProvider as ProviderId)) {
+    throw new Error('Choose an orchestrator engine.');
+  }
+  if (!isOrchestratorModel(orchestratorProvider, request.orchestratorModel)) {
+    throw new Error('Choose a supported orchestrator model.');
+  }
+
   const requestedHome = request.harnessHome.trim();
   const requestedProject = request.projectPath.trim();
   if (!requestedHome || !requestedProject || !isAbsolute(requestedHome) || !isAbsolute(requestedProject)) {
@@ -184,7 +205,9 @@ function validateWorkspace(request: WorkspaceConfigureRequest): WorkspaceConfig 
     onboardingComplete: true,
     harnessHome,
     projectPath,
-    orchestratorName: workspaceConfig.orchestratorName || DEFAULT_ORCHESTRATOR_NAME
+    orchestratorName: workspaceConfig.orchestratorName || DEFAULT_ORCHESTRATOR_NAME,
+    orchestratorProvider,
+    orchestratorModel: request.orchestratorModel
   };
 }
 
@@ -237,8 +260,19 @@ function registerIpcHandlers(): void {
     if (database && workspaceConfig.harnessHome !== nextConfig.harnessHome) {
       throw new Error('Restart Relay to change the Harness Home.');
     }
-    bootstrapWorkspace(nextConfig.harnessHome as string);
-    workspaceConfig = configStore?.write(nextConfig) ?? nextConfig;
+    const provider = (await detectProviders()).find(({ id }) => id === nextConfig.orchestratorProvider);
+    if (!provider?.available) {
+      throw new Error(`${provider?.label ?? nextConfig.orchestratorProvider} is not available.`);
+    }
+    const previousConfig = workspaceConfig;
+    workspaceConfig = nextConfig;
+    try {
+      bootstrapWorkspace(nextConfig);
+      workspaceConfig = configStore?.write(nextConfig) ?? nextConfig;
+    } catch (error) {
+      workspaceConfig = previousConfig;
+      throw error;
+    }
     return buildAppSnapshot();
   });
   ipcMain.handle(IPC.orchestratorRename, async (_event, request: OrchestratorRenameRequest) => {
@@ -347,10 +381,11 @@ app.whenReady().then(() => {
     try {
       const restored = validateWorkspace({
         harnessHome: workspaceConfig.harnessHome,
-        projectPath: workspaceConfig.projectPath
+        projectPath: workspaceConfig.projectPath,
+        orchestratorProvider: workspaceConfig.orchestratorProvider,
+        orchestratorModel: workspaceConfig.orchestratorModel
       });
       workspaceConfig = restored;
-      bootstrapWorkspace(restored.harnessHome as string);
     } catch (error) {
       logger.error({ error }, 'Failed to restore the Relay workspace');
       workspaceConfig = { ...EMPTY_WORKSPACE };

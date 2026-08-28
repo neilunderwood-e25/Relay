@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ChatGptIcon,
   ClaudeIcon,
@@ -9,6 +9,7 @@ import {
 } from '@hugeicons/core-free-icons';
 import type { ProviderCapability, ProviderId, TerminalSnapshot } from '../../../shared/contracts';
 import { DEFAULT_AGENT_NAMES } from '../../../shared/contracts';
+import { orchestratorModelLabel } from '../../../shared/orchestratorModels';
 import { useTerminalStore } from '../store/terminals';
 import { TerminalView } from './TerminalView';
 import { Button } from './ui/Button';
@@ -19,29 +20,26 @@ import { Tooltip } from './ui/Tooltip';
 export function OrchestratorTerminal({
   cwd,
   name,
-  providers
+  providers,
+  orchestratorProvider,
+  orchestratorModel
 }: {
   cwd: string;
   name: string;
   providers: ProviderCapability[];
+  orchestratorProvider: ProviderId;
+  orchestratorModel: string | null;
 }): React.JSX.Element {
   const terminals = useTerminalStore((state) => state.terminals);
   const upsert = useTerminalStore((state) => state.upsert);
   const remove = useTerminalStore((state) => state.remove);
   const markStopping = useTerminalStore((state) => state.markStopping);
-  const [provider, setProvider] = useState<ProviderId>(() => preferredProvider(providers));
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const terminal = useMemo(() => terminals
     .filter((candidate) => candidate.role === 'orchestrator')
     .sort((left, right) => right.createdAt - left.createdAt)[0] ?? null, [terminals]);
-
-  useEffect(() => {
-    if (!providers.some((candidate) => candidate.id === provider && candidate.available)) {
-      setProvider(preferredProvider(providers));
-    }
-  }, [provider, providers]);
 
   const launch = async (): Promise<void> => {
     if (!cwd.trim()) return;
@@ -53,12 +51,14 @@ export function OrchestratorTerminal({
         if (dismissed.ok) remove(terminal.id);
       }
       const created = await window.relay.spawnTerminal({
-        provider,
+        provider: orchestratorProvider,
         role: 'orchestrator',
+        avatarSeed: 'relay-orchestrator',
         cwd: cwd.trim(),
         name,
         cols: 120,
-        rows: 32
+        rows: 32,
+        args: orchestratorModel ? ['--model', orchestratorModel] : []
       });
       upsert(created);
     } catch (cause) {
@@ -80,8 +80,9 @@ export function OrchestratorTerminal({
     else if (!force) markStopping(snapshot.id);
   };
 
-  const providerCapability = providers.find((candidate) => candidate.id === provider);
+  const providerCapability = providers.find((candidate) => candidate.id === orchestratorProvider);
   const available = providerCapability?.available === true;
+  const modelLabel = orchestratorModelLabel(orchestratorProvider, orchestratorModel);
 
   return (
     <Card className="terminal-card orchestrator-terminal-card">
@@ -127,22 +128,12 @@ export function OrchestratorTerminal({
         ) : (
           <div className="orchestrator-terminal-empty">
             <span className="empty-terminal-icon"><Icon icon={SquareTerminalIcon} size={26} /></span>
-            <div className="orchestrator-provider-picker" aria-label="Terminal provider">
-              {providers.map((candidate) => (
-                <Tooltip key={candidate.id} content={candidate.id === 'claude' ? 'Claude CLI' : 'Codex CLI'}>
-                  <Button
-                    size="sm"
-                    variant={provider === candidate.id ? 'secondary' : 'ghost'}
-                    className={provider === candidate.id ? 'selected' : ''}
-                    disabled={!candidate.available}
-                    aria-pressed={provider === candidate.id}
-                    onClick={() => setProvider(candidate.id)}
-                  >
-                    <Icon icon={candidate.id === 'claude' ? ClaudeIcon : ChatGptIcon} size={15} />
-                    {DEFAULT_AGENT_NAMES[candidate.id]}
-                  </Button>
-                </Tooltip>
-              ))}
+            <div className="orchestrator-provider-summary">
+              <span className={`provider-name ${orchestratorProvider}`}>
+                <Icon icon={orchestratorProvider === 'claude' ? ClaudeIcon : ChatGptIcon} size={14} />
+                {DEFAULT_AGENT_NAMES[orchestratorProvider]}
+              </span>
+              <span>{modelLabel}</span>
             </div>
           </div>
         )}
@@ -153,7 +144,10 @@ export function OrchestratorTerminal({
           <>
             <span className={`provider-name ${terminal.provider}`}>
               <Icon icon={terminal.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={12} />
-              {DEFAULT_AGENT_NAMES[terminal.provider]}
+              {name}
+            </span>
+            <span className="terminal-provider-label">
+              {DEFAULT_AGENT_NAMES[terminal.provider]} · {modelLabel}
             </span>
             <code title={terminal.cwd}>{terminal.cwd}</code>
             <span className="terminal-pid">PID {terminal.pid}</span>
@@ -164,12 +158,6 @@ export function OrchestratorTerminal({
       </CardFooter>
     </Card>
   );
-}
-
-function preferredProvider(providers: ProviderCapability[]): ProviderId {
-  return providers.find((provider) => provider.id === 'claude' && provider.available)?.id
-    ?? providers.find((provider) => provider.available)?.id
-    ?? 'claude';
 }
 
 function messageOf(cause: unknown): string {

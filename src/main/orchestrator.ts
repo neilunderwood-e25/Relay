@@ -18,6 +18,7 @@ import type {
   WorktreeSnapshot
 } from '../shared/contracts';
 import { DEFAULT_AGENT_NAMES, DEFAULT_ORCHESTRATOR_NAME } from '../shared/contracts';
+import { personNameForSeed } from '../shared/agentIdentity';
 import { planObjective } from '../shared/orchestration';
 import type { RelayDatabase } from './database';
 
@@ -40,6 +41,7 @@ interface WorktreeService {
 interface TerminalService {
   spawn(request: {
     provider: ProviderId;
+    avatarSeed?: string;
     name?: string;
     cwd: string;
     cols?: number;
@@ -301,8 +303,9 @@ export class RehanOrchestrator {
       const prompt = workerPrompt(run, task, this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME);
       const terminal = await this.options.terminals.spawn({
         provider: task.provider,
+        avatarSeed: task.id,
         cwd: task.worktreePath,
-        name: `${DEFAULT_AGENT_NAMES[task.provider]} · ${task.title}`.slice(0, 80),
+        name: personNameForSeed(task.id),
         cols: 120,
         rows: 32,
         args: workerArgs(task.provider, prompt)
@@ -397,7 +400,8 @@ export class RehanOrchestrator {
 
 function workerPrompt(run: OrchestrationRun, task: OrchestrationTask, orchestratorName: string): string {
   return [
-    `You are ${DEFAULT_AGENT_NAMES[task.provider]}, a Relay worker coordinated by ${orchestratorName}.`,
+    `You are ${personNameForSeed(task.id)}, a Relay worker coordinated by ${orchestratorName}.`,
+    `Provider: ${DEFAULT_AGENT_NAMES[task.provider]}.`,
     `Objective: ${run.objective}`,
     `Role: ${task.role}`,
     `Your task: ${task.instructions}`,

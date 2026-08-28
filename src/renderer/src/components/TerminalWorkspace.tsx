@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import {
   ChatGptIcon,
   ClaudeIcon,
@@ -9,6 +10,7 @@ import {
 import type { TerminalSnapshot } from '../../../shared/contracts';
 import { DEFAULT_AGENT_NAMES } from '../../../shared/contracts';
 import { useTerminalStore } from '../store/terminals';
+import { AgentAvatar } from './AgentAvatar';
 import { TerminalView } from './TerminalView';
 import { Button } from './ui/Button';
 import { Card, CardContent, CardFooter, CardHeader } from './ui/Card';
@@ -17,9 +19,11 @@ import { Tabs, TabsList, TabsTrigger } from './ui/Tabs';
 import { Tooltip } from './ui/Tooltip';
 
 export function TerminalWorkspace(): React.JSX.Element {
-  const terminals = useTerminalStore((state) => state.terminals.filter(
-    (terminal) => terminal.role !== 'orchestrator'
-  ));
+  const allTerminals = useTerminalStore((state) => state.terminals);
+  const terminals = useMemo(
+    () => allTerminals.filter((terminal) => terminal.role !== 'orchestrator'),
+    [allTerminals]
+  );
   const selectedId = useTerminalStore((state) => state.selectedId);
   const select = useTerminalStore((state) => state.select);
   const remove = useTerminalStore((state) => state.remove);
@@ -54,6 +58,7 @@ export function TerminalWorkspace(): React.JSX.Element {
               <span className="terminal-label"><Icon icon={SquareTerminalIcon} size={15} /> Terminal</span>
             ) : terminals.map((terminal) => (
               <TabsTrigger key={terminal.id} value={terminal.id} title={statusLabel(terminal.status)}>
+                <AgentAvatar seed={terminal.avatarSeed ?? terminal.id} name={terminal.name} className="terminal-agent-avatar" />
                 <Icon icon={terminal.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={13} />
                 {terminal.name}
                 <span className={`terminal-state ${terminal.status}`} />
@@ -104,8 +109,9 @@ export function TerminalWorkspace(): React.JSX.Element {
           <>
             <span className={`provider-name ${selected.provider}`}>
               <Icon icon={selected.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={12} />
-              {DEFAULT_AGENT_NAMES[selected.provider]}
+              {selected.name}
             </span>
+            <span className="terminal-provider-label">{DEFAULT_AGENT_NAMES[selected.provider]}</span>
             <code title={selected.cwd}>{selected.cwd}</code>
             <span className="terminal-pid">PID {selected.pid}</span>
           </>

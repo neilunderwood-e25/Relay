@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { OrchestrationSnapshot } from '../src/shared/contracts';
+import { personNameForSeed } from '../src/shared/agentIdentity';
 import { HiveManager } from '../src/main/hive';
 
 const temporaryDirectories: string[] = [];
@@ -46,6 +47,17 @@ describe('HiveManager', () => {
     expect(readFileSync(boardPath, 'utf8')).toBe('# Relay board\n\n_Michael owns this shared plan._\n');
   });
 
+  it('records the selected orchestrator engine', () => {
+    const root = mkdtempSync(join(tmpdir(), 'relay-hive-engine-test-'));
+    temporaryDirectories.push(root);
+    const hive = new HiveManager(join(root, 'hive'), 'Michael', 'codex', 'gpt-5.6-sol');
+    hive.ensure();
+
+    const identity = readFileSync(join(hive.agentRoot, 'identity.md'), 'utf8');
+    expect(identity).toContain('- Engine: Codex CLI');
+    expect(identity).toContain('- Model: GPT-5.6 Sol');
+  });
+
   it('mirrors orchestration tasks and orchestrator status into the hive', () => {
     const { hive } = fixture();
     hive.ensure();
@@ -58,7 +70,7 @@ describe('HiveManager', () => {
       id: 'task-1',
       runId: 'run-1',
       title: 'Build API',
-      assignee: 'codex',
+      assignee: personNameForSeed('task-1'),
       role: 'builder',
       status: 'doing'
     }]);
