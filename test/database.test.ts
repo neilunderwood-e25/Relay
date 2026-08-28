@@ -1,0 +1,122 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { FoundryDatabase } from '../src/main/database';
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function temporaryDatabase(): FoundryDatabase {
+  const directory = mkdtempSync(join(tmpdir(), 'foundry-db-test-'));
+  temporaryDirectories.push(directory);
+  return new FoundryDatabase(join(directory, 'foundry.db'));
+}
+
+describe('FoundryDatabase', () => {
+  it('opens and applies every migration', () => {
+    const database = temporaryDatabase();
+    database.open();
+
+    expect(database.health()).toMatchObject({
+      open: true,
+      schemaVersion: 4
+    });
+
+    database.close();
+    expect(database.health().open).toBe(false);
+  });
+
+  it('persists values and append-only events across reopen', () => {
+    const database = temporaryDatabase();
+    database.open();
+    database.setValue('foundation', { ready: true });
+    const eventId = database.appendEvent('test.completed', { ok: true });
+    database.close();
+
+    database.open();
+    expect(database.getValue('foundation')).toEqual({ ready: true });
+    expect(eventId).toBe(1);
+    database.close();
+  });
+
+  it('is safe to open and close more than once', () => {
+    const database = temporaryDatabase();
+    database.open();
+    database.open();
+    database.close();
+    database.close();
+
+    expect(database.health().open).toBe(false);
+  });
+
+  it('persists managed worktree records', () => {
+    const database = temporaryDatabase();
+    database.open();
+    const record = {
+      id: 'worktree-1',
+      repoRoot: '/tmp/project',
+      path: '/tmp/worktrees/agent-1',
+      branch: 'foundry/agent-1',
+      baseBranch: 'main',
+      createdAt: 100,
+      updatedAt: 100
+    };
+
+    database.upsertWorktree(record);
+    expect(database.getWorktree(record.id)).toEqual(record);
+    expect(database.listWorktrees(record.repoRoot)).toEqual([record]);
+    expect(database.deleteWorktree(record.id)).toBe(true);
+    expect(database.getWorktree(record.id)).toBeUndefined();
+    database.close();
+  });
+
+  it('persists Rehan runs and tasks', () => {
+    const database = temporaryDatabase();
+    database.open();
+    database.createOrchestration({
+      run: {
+        id: 'run-1',
+        objective: 'Build the feature',
+        repoRoot: '/tmp/project',
+        baseBranch: 'main',
+        status: 'queued',
+        strategy: 'parallel',
+        concurrency: 2,
+        createdAt: 100,
+        updatedAt: 100
+      },
+      tasks: [{
+        id: 'task-1',
+        runId: 'run-1',
+        ordinal: 0,
+        title: 'Build',
+        instructions: 'Build the feature',
+        role: 'builder',
+        deliverable: 'Working feature',
+        provider: 'codex',
+        status: 'queued',
+        attempt: 0,
+        createdAt: 100,
+        updatedAt: 100
+      }]
+    });
+
+    const snapshot = database.getOrchestration('run-1');
+    expect(snapshot?.run).toMatchObject({ objective: 'Build the feature', status: 'queued', strategy: 'parallel' });
+    expect(snapshot?.tasks[0]).toMatchObject({ role: 'builder', deliverable: 'Working feature' });
+    expect(snapshot?.tasks).toHaveLength(1);
+    expect(database.listOrchestrations('/tmp/project')).toHaveLength(1);
+    expect(database.recoverInterruptedOrchestrations()).toBe(1);
+    expect(database.getOrchestration('run-1')).toMatchObject({
+      run: { status: 'blocked' },
+      tasks: [{ status: 'blocked' }]
+    });
+    database.close();
+  });
+});
