@@ -896,6 +896,8 @@ code { font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace; }
 
 .history-state.running,
 .history-state.queued,
+.history-state.planning,
+.history-state.summarizing,
 .task-state.running,
 .task-state.starting { background: var(--primary); box-shadow: 0 0 6px color-mix(in oklch, var(--ring) 45%, transparent); }
 .history-state.completed,
@@ -998,6 +1000,72 @@ code { font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace; }
   border-top: 1px solid var(--border);
   padding: 12px;
 }
+
+.orchestrator-planning-state,
+.orchestrator-plan-summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px;
+  background: color-mix(in oklch, var(--muted) 34%, transparent);
+}
+
+.orchestrator-planning-state { min-height: 68px; }
+.planning-agent-avatar { width: 36px; height: 36px; border-radius: 10px; }
+
+.orchestrator-planning-state > div {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.orchestrator-planning-state strong { font-size: var(--text-sm); font-weight: 640; }
+.orchestrator-planning-state span { color: var(--muted-foreground); font-size: var(--text-xs); }
+
+.orchestrator-plan-summary {
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+}
+
+.orchestrator-plan-summary > svg { flex: 0 0 auto; color: var(--primary); }
+.orchestrator-plan-summary > span { min-width: 0; flex: 1; }
+.orchestrator-plan-summary.fallback > svg { color: var(--status-warning); }
+.planning-alert { margin: 0; }
+
+.orchestrator-outcome {
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in oklch, var(--ring) 45%, var(--border));
+  border-radius: 9px;
+  padding: 10px;
+  background: color-mix(in oklch, var(--primary) 6%, var(--background));
+}
+
+.orchestrator-outcome > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--primary);
+}
+
+.orchestrator-outcome > div strong { flex: 1; font-size: var(--text-xs); }
+.orchestrator-outcome > pre {
+  max-height: 150px;
+  margin: 0;
+  overflow: auto;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.orchestrator-outcome.fallback { border-color: color-mix(in oklch, var(--status-warning) 42%, var(--border)); }
 
 .integration-alert { margin: 0; }
 

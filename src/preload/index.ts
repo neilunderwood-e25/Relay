@@ -18,6 +18,7 @@ const api: RelayApi = {
   removeWorktree: (request) => ipcRenderer.invoke(IPC.worktreeRemove, request),
   listOrchestrations: (repoRoot) => ipcRenderer.invoke(IPC.orchestrationsList, repoRoot),
   createOrchestration: (request) => ipcRenderer.invoke(IPC.orchestrationCreate, request),
+  replanOrchestration: (request) => ipcRenderer.invoke(IPC.orchestrationReplan, request),
   stopOrchestration: (runId) => ipcRenderer.invoke(IPC.orchestrationStop, runId),
   retryOrchestrationTask: (request) => ipcRenderer.invoke(IPC.orchestrationTaskRetry, request),
   getOrchestrationTaskDiff: (request) => ipcRenderer.invoke(IPC.orchestrationTaskDiff, request),

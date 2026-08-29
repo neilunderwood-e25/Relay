@@ -25,7 +25,7 @@ describe('RelayDatabase', () => {
 
     expect(database.health()).toMatchObject({
       open: true,
-      schemaVersion: 6
+      schemaVersion: 8
     });
 
     database.close();
@@ -132,6 +132,34 @@ describe('RelayDatabase', () => {
     database.close();
   });
 
+  it('recovers an interrupted model-planning run without any tasks', () => {
+    const database = temporaryDatabase();
+    database.open();
+    database.createOrchestration({
+      run: {
+        id: 'run-planning',
+        objective: 'Plan the feature',
+        repoRoot: '/tmp/project',
+        baseBranch: 'main',
+        status: 'planning',
+        strategy: 'balanced',
+        concurrency: 2,
+        planningProvider: 'claude',
+        planningTerminalId: 'terminal-plan',
+        createdAt: 100,
+        updatedAt: 100
+      },
+      tasks: []
+    });
+
+    expect(database.recoverInterruptedOrchestrations()).toBe(1);
+    expect(database.getOrchestration('run-planning')?.run).toMatchObject({
+      status: 'blocked',
+      planningError: 'Relay restarted before planning finished.'
+    });
+    database.close();
+  });
+
   it('persists orchestrator runs and tasks', () => {
     const database = temporaryDatabase();
     database.open();
@@ -144,6 +172,17 @@ describe('RelayDatabase', () => {
         status: 'queued',
         strategy: 'parallel',
         concurrency: 2,
+        planningProvider: 'claude',
+        planningModel: 'claude-opus-4-1',
+        planningProviders: ['claude', 'codex'],
+        planningProfileIds: ['profile-frontend'],
+        parentRunId: 'run-original',
+        replanContext: 'The original worker was blocked.',
+        synthesisStatus: 'completed',
+        synthesisProvider: 'claude',
+        synthesisModel: 'claude-opus-4-1',
+        synthesisTerminalId: 'terminal-outcome',
+        finalSummary: 'The replacement completed successfully.',
         createdAt: 100,
         updatedAt: 100
       },
@@ -158,14 +197,29 @@ describe('RelayDatabase', () => {
         provider: 'codex',
         status: 'queued',
         attempt: 0,
+        blocker: 'Waiting for an SDK.',
         createdAt: 100,
         updatedAt: 100
       }]
     });
 
     const snapshot = database.getOrchestration('run-1');
-    expect(snapshot?.run).toMatchObject({ objective: 'Build the feature', status: 'queued', strategy: 'parallel' });
-    expect(snapshot?.tasks[0]).toMatchObject({ role: 'builder', deliverable: 'Working feature' });
+    expect(snapshot?.run).toMatchObject({
+      objective: 'Build the feature',
+      status: 'queued',
+      strategy: 'parallel',
+      planningProvider: 'claude',
+      planningProviders: ['claude', 'codex'],
+      planningProfileIds: ['profile-frontend'],
+      parentRunId: 'run-original',
+      synthesisStatus: 'completed',
+      finalSummary: 'The replacement completed successfully.'
+    });
+    expect(snapshot?.tasks[0]).toMatchObject({
+      role: 'builder',
+      deliverable: 'Working feature',
+      blocker: 'Waiting for an SDK.'
+    });
     expect(snapshot?.tasks).toHaveLength(1);
     expect(database.listOrchestrations('/tmp/project')).toHaveLength(1);
     expect(database.recoverInterruptedOrchestrations()).toBe(1);

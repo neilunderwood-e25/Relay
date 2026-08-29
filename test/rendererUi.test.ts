@@ -55,6 +55,12 @@ describe('renderer design-system contract', () => {
     expect(library).toContain('window.relay.saveOrchestrationTemplate');
     expect(orchestrator).toContain('profileIds: selectedProfileIds');
     expect(orchestrator).toContain('templateId: selectedTemplateId');
+    expect(orchestrator).toContain("run.status === 'planning'");
+    expect(orchestrator).toContain('run.planningSummary');
+    expect(orchestrator).toContain("run.status === 'summarizing'");
+    expect(orchestrator).toContain('run.finalSummary');
+    expect(orchestrator).toContain('window.relay.replanOrchestration');
+    expect(orchestrator).toContain('Re-plan run');
   });
 
   it('ships the operations views on shared UI primitives', () => {

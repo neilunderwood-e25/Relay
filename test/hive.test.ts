@@ -31,6 +31,7 @@ describe('HiveManager', () => {
       'tasks.json',
       'registry.json',
       'log.jsonl',
+      'messages.jsonl',
       'agents/orchestrator/identity.md',
       'agents/orchestrator/memory.md',
       'agents/orchestrator/cursor.json',
@@ -104,6 +105,24 @@ describe('HiveManager', () => {
     expect(registry.agents.orchestrator.name).toBe('Avery');
     expect(registry.agents.claude.name).toBe('Claude');
     expect(registry.agents.codex.name).toBe('Codex');
+  });
+
+  it('delivers durable worker messages to the orchestrator inbox', () => {
+    const { hive } = fixture();
+    hive.ensure();
+    hive.appendMessage({
+      id: 'message-1',
+      runId: 'run-1',
+      taskId: 'task-1',
+      from: 'Avery',
+      to: 'orchestrator',
+      kind: 'blocker',
+      body: 'Generated SDK is missing.\nPlease regenerate it.',
+      createdAt: 200
+    });
+
+    expect(readFileSync(join(hive.root, 'messages.jsonl'), 'utf8')).toContain('Generated SDK is missing. Please regenerate it.');
+    expect(readFileSync(join(hive.agentRoot, 'inbox', '200-message-1.json'), 'utf8')).toContain('"kind": "blocker"');
   });
 });
 

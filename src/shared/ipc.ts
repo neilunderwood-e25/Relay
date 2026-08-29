@@ -9,6 +9,7 @@ export const IPC = {
   worktreeRemove: 'worktree:remove',
   orchestrationsList: 'orchestrations:list',
   orchestrationCreate: 'orchestration:create',
+  orchestrationReplan: 'orchestration:replan',
   orchestrationStop: 'orchestration:stop',
   orchestrationTaskRetry: 'orchestration:task:retry',
   orchestrationTaskDiff: 'orchestration:task:diff',

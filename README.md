@@ -2,7 +2,7 @@
 
 Relay is a local-first desktop multi-agent coding harness. Michael is the default orchestrator; Claude Code and Codex CLI workers operate in isolated Git worktrees on one coding project. The orchestrator name can be changed in the app.
 
-The current implementation includes Milestones 01–08, from the technical foundation through the extensibility plane. Michael accepts one objective, decomposes it across available CLI workers, provisions isolated worktrees, runs Claude Code and Codex non-interactively, and persists the complete lifecycle through review, integration, verification, cleanup, activity history, recovery, reusable agent profiles, and saved team templates.
+The current implementation includes Milestones 01–09, from the technical foundation through intelligent orchestration. Michael uses the selected Claude or Codex model to inspect an objective, choose a saved team, produce a bounded execution plan, route worker blockers, and synthesize the final outcome. The complete lifecycle remains persisted through review, integration, verification, cleanup, activity history, recovery, reusable agent profiles, and saved team templates.
 
 ## Development
 
@@ -46,6 +46,9 @@ Electron main process
   ├── persistent orchestrator hive workspace
   ├── Git repository + worktree manager
   ├── orchestrator planner + concurrent scheduler
+  ├── read-only model planner + validated JSON plans
+  ├── durable hive messages + blocker routing
+  ├── read-only final outcome synthesis
   ├── structured logs
   ├── node-pty process supervisor
   ├── bounded terminal replay buffers
@@ -90,6 +93,7 @@ Harness Home/
     board.md
     tasks.json
     log.jsonl
+    messages.jsonl
     agents/orchestrator/
       identity.md
       memory.md
@@ -156,3 +160,17 @@ Michael's identity is refreshed by the harness while `memory.md` is never overwr
 - Team templates save an objective, run mode, concurrency, and up to four agent profiles.
 - The orchestrator command surface can load a template or select individual saved agents before a run.
 - Custom data never becomes an executable command: provider commands remain fixed and model identifiers are passed as bounded argument values without a shell.
+
+## Intelligent orchestration lifecycle
+
+- Every new run starts in a persisted planning state and launches Michael through the engine and model selected at startup.
+- Planning runs in Claude plan mode or the Codex read-only sandbox and cannot modify the repository.
+- Michael receives the objective, run mode, available providers, and eligible saved-agent roster, then returns a one-to-four-task JSON plan.
+- Relay validates every title, role, deliverable, provider, and profile assignment before creating worktrees.
+- Invalid output, a missing planner, or a non-zero planner exit automatically produces a deterministic fallback plan instead of stranding the run.
+- Planner transcripts remain available in Console, while the monitor shows plan source, rationale, and fallback errors.
+- Failed, blocked, or stopped runs expose an explicit Re-plan action that creates a fresh model-planned run without mutating historical results.
+- Re-plans retain a parent-run link and send prior blocker evidence to Michael, so replacement tasks address the failed approach while preserving history.
+- Workers can emit a bounded `RELAY_BLOCKER` report; Relay turns it into a blocked task plus a durable message in Michael's hive inbox and `messages.jsonl` stream.
+- After the workers finish, Michael runs in a read-only synthesis terminal and publishes one compact outcome; a deterministic summary is retained if the model is unavailable or malformed.
+- Planning, blocker, synthesis, and task state are projected into the hive board, inbox, message stream, and structured task ledger.

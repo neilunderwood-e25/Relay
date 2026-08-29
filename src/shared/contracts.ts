@@ -31,6 +31,17 @@ export interface HiveHealth {
   error?: string;
 }
 
+export interface HiveCoordinationMessage {
+  id: string;
+  runId: string;
+  taskId?: string;
+  from: string;
+  to: 'orchestrator';
+  kind: 'status' | 'blocker' | 'result' | 'replan' | 'summary';
+  body: string;
+  createdAt: number;
+}
+
 export interface WorkspaceConfig {
   onboardingComplete: boolean;
   harnessHome: string | null;
@@ -160,7 +171,7 @@ export interface RecoveryResult {
 }
 
 export type TerminalStatus = 'starting' | 'running' | 'stopping' | 'exited';
-export type TerminalRole = 'worker' | 'orchestrator';
+export type TerminalRole = 'worker' | 'orchestrator' | 'planner' | 'synthesizer';
 
 export interface TerminalSpawnRequest {
   provider: ProviderId;
@@ -273,8 +284,10 @@ export interface OrchestratorRenameRequest {
 }
 
 export type OrchestrationRunStatus =
+  | 'planning'
   | 'queued'
   | 'running'
+  | 'summarizing'
   | 'stopping'
   | 'blocked'
   | 'failed'
@@ -299,6 +312,8 @@ export type OrchestrationReviewStatus = 'pending' | 'accepted' | 'rejected';
 export type TaskIntegrationStatus = 'pending' | 'integrating' | 'integrated' | 'no_changes' | 'conflict' | 'failed';
 export type RunIntegrationStatus = 'pending' | 'reviewing' | 'integrating' | 'integrated' | 'conflict' | 'failed';
 export type VerificationStatus = 'idle' | 'running' | 'passed' | 'failed';
+export type PlanningSource = 'model' | 'fallback';
+export type SynthesisStatus = 'idle' | 'running' | 'completed' | 'fallback';
 
 export interface OrchestrationRun {
   id: string;
@@ -321,6 +336,22 @@ export interface OrchestrationRun {
   verificationSummary?: string;
   verificationError?: string;
   templateId?: string;
+  planningProvider?: ProviderId;
+  planningModel?: string;
+  planningTerminalId?: string;
+  planningSummary?: string;
+  planningError?: string;
+  planningSource?: PlanningSource;
+  planningProviders?: ProviderId[];
+  planningProfileIds?: string[];
+  parentRunId?: string;
+  replanContext?: string;
+  synthesisStatus?: SynthesisStatus;
+  synthesisProvider?: ProviderId;
+  synthesisModel?: string;
+  synthesisTerminalId?: string;
+  finalSummary?: string;
+  synthesisError?: string;
 }
 
 export interface OrchestrationTask {
@@ -340,6 +371,7 @@ export interface OrchestrationTask {
   terminalId?: string;
   summary?: string;
   error?: string;
+  blocker?: string;
   createdAt: number;
   updatedAt: number;
   startedAt?: number;
@@ -385,6 +417,8 @@ export interface OrchestrationRunRequest {
   runId: string;
 }
 
+export interface OrchestrationReplanRequest extends OrchestrationRunRequest {}
+
 export interface OrchestrationVerifyRequest extends OrchestrationRunRequest {
   provider?: ProviderId;
 }
@@ -429,6 +463,7 @@ export interface RelayApi {
   removeWorktree(request: WorktreeRemoveRequest): Promise<OperationResult>;
   listOrchestrations(repoRoot?: string): Promise<OrchestrationSnapshot[]>;
   createOrchestration(request: OrchestrationCreateRequest): Promise<OrchestrationSnapshot>;
+  replanOrchestration(request: OrchestrationReplanRequest): Promise<OrchestrationSnapshot>;
   stopOrchestration(runId: string): Promise<OperationResult>;
   retryOrchestrationTask(request: OrchestrationTaskRequest): Promise<OperationResult>;
   getOrchestrationTaskDiff(request: OrchestrationTaskRequest): Promise<TaskDiffSnapshot>;

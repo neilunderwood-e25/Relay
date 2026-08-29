@@ -263,7 +263,7 @@ export class PtyManager {
     if (request.name !== undefined && (typeof request.name !== 'string' || request.name.length > 80)) {
       throw new Error('Terminal names must be at most 80 characters.');
     }
-    if (request.role !== undefined && !['worker', 'orchestrator'].includes(request.role)) {
+    if (request.role !== undefined && !['worker', 'orchestrator', 'planner', 'synthesizer'].includes(request.role)) {
       throw new Error('Unsupported terminal role.');
     }
     if (request.avatarSeed !== undefined && (typeof request.avatarSeed !== 'string' || request.avatarSeed.length > 128)) {

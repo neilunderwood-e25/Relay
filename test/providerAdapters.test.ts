@@ -14,5 +14,7 @@ describe('provider adapters', () => {
       .toEqual(['--model', 'claude-sonnet-4-5', '--print', '--permission-mode']);
     expect(providerAdapter('codex').workerArgs('Ship it', 'gpt-5.3-codex')).toContain('workspace-write');
     expect(providerAdapter('codex').verificationArgs('Check it', 'gpt-5.3-codex')).toContain('read-only');
+    expect(providerAdapter('claude').planningArgs('Plan it', 'claude-opus-4-1')).toContain('plan');
+    expect(providerAdapter('codex').planningArgs('Plan it', 'gpt-5.3-codex')).toContain('read-only');
   });
 });

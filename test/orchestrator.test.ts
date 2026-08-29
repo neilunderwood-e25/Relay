@@ -7,8 +7,10 @@ import type {
   ProviderCapability,
   ProviderId,
   TerminalReplay,
+  TerminalRole,
   TerminalSnapshot,
   TaskDiffSnapshot,
+  HiveCoordinationMessage,
   WorktreeSnapshot
 } from '../src/shared/contracts';
 import { RelayDatabase } from '../src/main/database';
@@ -84,10 +86,12 @@ class FakeWorktrees {
 class FakeTerminals {
   spawned: Array<{ snapshot: TerminalSnapshot; args?: string[] }> = [];
   stopped: string[] = [];
+  replayData = new Map<string, string>();
 
-  async spawn(request: { provider: ProviderId; name?: string; cwd: string; args?: string[] }): Promise<TerminalSnapshot> {
+  async spawn(request: { provider: ProviderId; role?: TerminalRole; name?: string; cwd: string; args?: string[] }): Promise<TerminalSnapshot> {
     const snapshot: TerminalSnapshot = {
       id: `terminal-${this.spawned.length + 1}`,
+      role: request.role ?? 'worker',
       name: request.name ?? 'Worker',
       provider: request.provider,
       command: request.provider,
@@ -111,7 +115,7 @@ class FakeTerminals {
   }
 
   replay(id: string): TerminalReplay {
-    return { data: `summary for ${id}`, lastSequence: 1 };
+    return { data: this.replayData.get(id) ?? `summary for ${id}`, lastSequence: 1 };
   }
 }
 
@@ -120,6 +124,7 @@ function fixture(): {
   worktrees: FakeWorktrees;
   terminals: FakeTerminals;
   orchestrator: Orchestrator;
+  messages: HiveCoordinationMessage[];
 } {
   const root = mkdtempSync(join(tmpdir(), 'relay-orchestrator-test-'));
   temporaryDirectories.push(root);
@@ -127,14 +132,17 @@ function fixture(): {
   database.open();
   const worktrees = new FakeWorktrees();
   const terminals = new FakeTerminals();
+  const messages: HiveCoordinationMessage[] = [];
   const orchestrator = new Orchestrator({
     database,
     logger: pino({ enabled: false }),
     worktrees,
     terminals,
-    detectProviders: async () => capabilities()
+    detectProviders: async () => capabilities(),
+    getOrchestratorConfig: () => ({ provider: 'claude', model: 'claude-opus-4-1' }),
+    onCoordinationMessage: (message) => messages.push(message)
   });
-  return { database, worktrees, terminals, orchestrator };
+  return { database, worktrees, terminals, orchestrator, messages };
 }
 
 describe('Orchestrator', () => {
@@ -165,22 +173,73 @@ describe('Orchestrator', () => {
       concurrency: 2
     });
 
-    await eventually(() => terminals.spawned.length === 2);
+    expect(created.run).toMatchObject({ status: 'planning', planningProvider: 'claude', planningModel: 'claude-opus-4-1' });
+    expect(planner(terminals).args).toContain('plan');
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 2);
+    const workerSessions = workers(terminals);
     expect(worktrees.created).toHaveLength(2);
-    expect(new Set(terminals.spawned.map(({ snapshot }) => snapshot.cwd)).size).toBe(2);
-    expect(terminals.spawned[0].args?.join(' ')).toContain('Relay worker coordinated by Michael');
-    expect(terminals.spawned.find(({ snapshot }) => snapshot.provider === 'codex')?.args?.slice(0, 3))
+    expect(new Set(workerSessions.map(({ snapshot }) => snapshot.cwd)).size).toBe(2);
+    expect(workerSessions[0].args?.join(' ')).toContain('Relay worker coordinated by Michael');
+    expect(workerSessions.find(({ snapshot }) => snapshot.provider === 'codex')?.args?.slice(0, 3))
       .toEqual(['--ask-for-approval', 'never', 'exec']);
     expect(database.getOrchestration(created.run.id)).toMatchObject({
       run: { status: 'running' },
       tasks: [{ status: 'running' }, { status: 'running' }]
     });
 
-    const [first, second] = terminals.spawned.map(({ snapshot }) => snapshot);
+    const [first, second] = workerSessions.map(({ snapshot }) => snapshot);
     orchestrator.handleTerminalExit({ id: first.id, exitCode: 0, exitedAt: Date.now() });
     orchestrator.handleTerminalExit({ id: second.id, exitCode: 0, exitedAt: Date.now() });
+    await finishSynthesis(orchestrator, terminals, 'All inspection tasks completed successfully.');
     await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
     expect(database.getOrchestration(created.run.id)?.tasks.every((task) => task.summary)).toBe(true);
+    expect(database.getOrchestration(created.run.id)?.run.finalSummary).toContain('completed successfully');
+    database.close();
+  });
+
+  it('materializes a valid model-authored plan', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Build a secure settings screen',
+      providers: ['claude', 'codex'],
+      concurrency: 2
+    });
+    const planning = planner(terminals);
+    terminals.replayData.set(planning.snapshot.id, JSON.stringify({
+      summary: 'Separate implementation from independent validation.',
+      tasks: [
+        {
+          title: 'Build settings UI',
+          role: 'builder',
+          deliverable: 'Working settings screen',
+          instructions: 'Implement the settings screen and its state handling.',
+          provider: 'claude'
+        },
+        {
+          title: 'Validate settings',
+          role: 'reviewer',
+          deliverable: 'Focused tests and review',
+          instructions: 'Add focused tests and inspect accessibility and unsafe state transitions.',
+          provider: 'codex'
+        }
+      ]
+    }));
+    orchestrator.handleTerminalExit({ id: planning.snapshot.id, exitCode: 0, exitedAt: Date.now() });
+    await eventually(() => workers(terminals).length === 2);
+
+    expect(database.getOrchestration(created.run.id)).toMatchObject({
+      run: {
+        planningSource: 'model',
+        planningSummary: 'Separate implementation from independent validation.',
+        status: 'running'
+      },
+      tasks: [
+        { title: 'Build settings UI', provider: 'claude', status: 'running' },
+        { title: 'Validate settings', provider: 'codex', status: 'running' }
+      ]
+    });
     database.close();
   });
 
@@ -225,16 +284,18 @@ describe('Orchestrator', () => {
       objective: 'Build the extension library.',
       templateId: 'template-feature'
     });
-    await eventually(() => terminals.spawned.length === 2);
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 2);
+    const planned = database.getOrchestration(created.run.id)!;
 
-    expect(created.run).toMatchObject({ templateId: 'template-feature', strategy: 'parallel', concurrency: 2 });
-    expect(created.tasks).toMatchObject([
+    expect(planned.run).toMatchObject({ templateId: 'template-feature', strategy: 'parallel', concurrency: 2 });
+    expect(planned.tasks).toMatchObject([
       { profileId: 'profile-avery', agentName: 'Avery', provider: 'claude', model: 'claude-sonnet-4-5' },
       { profileId: 'profile-morgan', agentName: 'Morgan', provider: 'claude' }
     ]);
-    expect(terminals.spawned.map(({ snapshot }) => snapshot.name)).toEqual(['Avery', 'Morgan']);
-    expect(terminals.spawned[0].args).toContain('claude-sonnet-4-5');
-    expect(terminals.spawned[0].args?.at(-1)).toContain('Own the frontend and accessibility.');
+    expect(workers(terminals).map(({ snapshot }) => snapshot.name)).toEqual(['Avery', 'Morgan']);
+    expect(workers(terminals)[0].args).toContain('claude-sonnet-4-5');
+    expect(workers(terminals)[0].args?.at(-1)).toContain('Own the frontend and accessibility.');
     database.close();
   });
 
@@ -247,10 +308,11 @@ describe('Orchestrator', () => {
       concurrency: 1
     });
 
-    await eventually(() => terminals.spawned.length === 1);
-    const first = terminals.spawned[0].snapshot;
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1);
+    const first = workers(terminals)[0].snapshot;
     orchestrator.handleTerminalExit({ id: first.id, exitCode: 0, exitedAt: Date.now() });
-    await eventually(() => terminals.spawned.length === 2);
+    await eventually(() => workers(terminals).length === 2);
     expect(database.getOrchestration(created.run.id)?.tasks.map((task) => task.status)).toEqual([
       'completed',
       'running'
@@ -265,8 +327,9 @@ describe('Orchestrator', () => {
       objective: 'Build one thing',
       providers: ['codex']
     });
-    await eventually(() => terminals.spawned.length === 1);
-    const first = terminals.spawned[0].snapshot;
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1);
+    const first = workers(terminals)[0].snapshot;
 
     await expect(orchestrator.stop(created.run.id)).resolves.toEqual({ ok: true });
     expect(terminals.stopped).toEqual([first.id]);
@@ -275,7 +338,7 @@ describe('Orchestrator', () => {
 
     const task = database.getOrchestration(created.run.id)!.tasks[0];
     await expect(orchestrator.retry({ taskId: task.id })).resolves.toEqual({ ok: true });
-    await eventually(() => terminals.spawned.length === 2);
+    await eventually(() => workers(terminals).length === 2);
     expect(database.getOrchestration(created.run.id)?.run.status).toBe('running');
     database.close();
   });
@@ -289,10 +352,12 @@ describe('Orchestrator', () => {
       providers: ['claude', 'codex'],
       concurrency: 2
     });
-    await eventually(() => terminals.spawned.length === 2);
-    for (const { snapshot } of terminals.spawned.slice(0, 2)) {
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 2);
+    for (const { snapshot } of workers(terminals).slice(0, 2)) {
       orchestrator.handleTerminalExit({ id: snapshot.id, exitCode: 0, exitedAt: Date.now() });
     }
+    await finishSynthesis(orchestrator, terminals, 'The feature and validation work are ready for review.');
     await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
     const completed = database.getOrchestration(created.run.id)!;
 
@@ -322,6 +387,35 @@ describe('Orchestrator', () => {
     expect(cleaned.tasks.every((task) => !task.worktreeId)).toBe(true);
     database.close();
   });
+
+  it('routes worker blockers through the hive and creates an approved replacement run', async () => {
+    const { database, terminals, orchestrator, messages } = fixture();
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Repair the failing build',
+      providers: ['claude']
+    });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    terminals.replayData.set(worker.id, 'I could not locate the generated SDK.\nRELAY_BLOCKER: Generated SDK is missing.');
+    orchestrator.handleTerminalExit({ id: worker.id, exitCode: 0, exitedAt: Date.now() });
+    await finishSynthesis(orchestrator, terminals, 'The run is blocked because the generated SDK is missing.');
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'blocked');
+
+    expect(database.getOrchestration(created.run.id)?.tasks[0]).toMatchObject({
+      status: 'blocked',
+      blocker: 'Generated SDK is missing.'
+    });
+    expect(messages.map((message) => message.kind)).toEqual(expect.arrayContaining(['status', 'blocker', 'summary']));
+
+    const replacement = await orchestrator.replan({ runId: created.run.id });
+    expect(replacement.run).toMatchObject({ status: 'planning', parentRunId: created.run.id });
+    const nextPlanner = terminals.spawned.filter(({ snapshot }) => snapshot.role === 'planner').at(-1)!;
+    expect(nextPlanner.args?.at(-1)).toContain('Previous run evidence');
+    expect(messages.at(-1)).toMatchObject({ kind: 'replan', runId: created.run.id });
+    database.close();
+  });
 });
 
 function capabilities(): ProviderCapability[] {
@@ -334,6 +428,37 @@ function capabilities(): ProviderCapability[] {
     version: '1.0.0',
     error: null
   }));
+}
+
+function planner(terminals: FakeTerminals): FakeTerminals['spawned'][number] {
+  const session = terminals.spawned.find(({ snapshot }) => snapshot.role === 'planner');
+  if (!session) throw new Error('Planner terminal was not started.');
+  return session;
+}
+
+function workers(terminals: FakeTerminals): FakeTerminals['spawned'] {
+  return terminals.spawned.filter(({ snapshot }) => snapshot.role === 'worker');
+}
+
+function synthesizer(terminals: FakeTerminals): FakeTerminals['spawned'][number] | undefined {
+  return terminals.spawned.find(({ snapshot }) => snapshot.role === 'synthesizer');
+}
+
+async function finishSynthesis(
+  orchestrator: Orchestrator,
+  terminals: FakeTerminals,
+  summary: string
+): Promise<void> {
+  await eventually(() => Boolean(synthesizer(terminals)));
+  const session = synthesizer(terminals)!.snapshot;
+  terminals.replayData.set(session.id, summary);
+  orchestrator.handleTerminalExit({ id: session.id, exitCode: 0, exitedAt: Date.now() });
+}
+
+async function finishPlanningWithFallback(orchestrator: Orchestrator, terminals: FakeTerminals): Promise<void> {
+  const session = planner(terminals).snapshot;
+  orchestrator.handleTerminalExit({ id: session.id, exitCode: 1, exitedAt: Date.now() });
+  await eventually(() => workers(terminals).length > 0);
 }
 
 async function eventually(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {

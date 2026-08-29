@@ -5,6 +5,7 @@ export interface ProviderAdapter {
   label: string;
   command: string;
   versionArgs: string[];
+  planningArgs(prompt: string, model?: string | null): string[];
   workerArgs(prompt: string, model?: string | null): string[];
   verificationArgs(prompt: string, model?: string | null): string[];
 }
@@ -15,6 +16,10 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
     label: 'Claude Code',
     command: 'claude',
     versionArgs: ['--version'],
+    planningArgs: (prompt, model) => [
+      ...(model ? ['--model', model] : []),
+      '--print', '--permission-mode', 'plan', '--output-format', 'text', '--no-session-persistence', prompt
+    ],
     workerArgs: (prompt, model) => [
       ...(model ? ['--model', model] : []),
       '--print', '--permission-mode', 'acceptEdits', '--output-format', 'text', '--no-session-persistence', prompt
@@ -29,6 +34,10 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
     label: 'Codex CLI',
     command: 'codex',
     versionArgs: ['--version'],
+    planningArgs: (prompt, model) => [
+      '--ask-for-approval', 'never', ...(model ? ['--model', model] : []),
+      'exec', '--sandbox', 'read-only', '--color', 'always', '--ephemeral', prompt
+    ],
     workerArgs: (prompt, model) => [
       '--ask-for-approval', 'never', ...(model ? ['--model', model] : []),
       'exec', '--sandbox', 'workspace-write', '--color', 'always', '--ephemeral', prompt

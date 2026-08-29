@@ -177,6 +177,38 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_agent_profiles_provider ON agent_profiles(provider, created_at);
       CREATE INDEX idx_orchestration_templates_created ON orchestration_templates(created_at);
     `);
+  },
+  (database) => {
+    database.exec(`
+      ALTER TABLE orchestration_runs ADD COLUMN planning_provider TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN planning_model TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN planning_terminal_id TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN planning_summary TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN planning_error TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN planning_source TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN planning_providers_json TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN planning_profile_ids_json TEXT;
+
+      CREATE INDEX idx_orchestration_runs_planning_terminal
+        ON orchestration_runs(planning_terminal_id);
+    `);
+  },
+  (database) => {
+    database.exec(`
+      ALTER TABLE orchestration_runs ADD COLUMN parent_run_id TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN replan_context TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN synthesis_status TEXT NOT NULL DEFAULT 'idle';
+      ALTER TABLE orchestration_runs ADD COLUMN synthesis_provider TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN synthesis_model TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN synthesis_terminal_id TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN final_summary TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN synthesis_error TEXT;
+      ALTER TABLE orchestration_tasks ADD COLUMN blocker TEXT;
+
+      CREATE INDEX idx_orchestration_runs_parent ON orchestration_runs(parent_run_id);
+      CREATE INDEX idx_orchestration_runs_synthesis_terminal
+        ON orchestration_runs(synthesis_terminal_id);
+    `);
   }
 ];
 
@@ -463,6 +495,24 @@ export class RelayDatabase {
     return { run, tasks: this.listOrchestrationTasks(run.id) };
   }
 
+  getOrchestrationByPlanningTerminal(terminalId: string): OrchestrationSnapshot | undefined {
+    const row = this.requireOpen()
+      .prepare(`${RUN_SELECT} WHERE planning_terminal_id = ?`)
+      .get(terminalId) as RunRow | undefined;
+    if (!row) return undefined;
+    const run = runFromRow(row);
+    return { run, tasks: this.listOrchestrationTasks(run.id) };
+  }
+
+  getOrchestrationBySynthesisTerminal(terminalId: string): OrchestrationSnapshot | undefined {
+    const row = this.requireOpen()
+      .prepare(`${RUN_SELECT} WHERE synthesis_terminal_id = ?`)
+      .get(terminalId) as RunRow | undefined;
+    if (!row) return undefined;
+    const run = runFromRow(row);
+    return { run, tasks: this.listOrchestrationTasks(run.id) };
+  }
+
   listOrchestrationTasks(runId: string): OrchestrationTask[] {
     const rows = this.requireOpen()
       .prepare(`${TASK_SELECT} WHERE run_id = ? ORDER BY ordinal`)
@@ -488,11 +538,18 @@ export class RelayDatabase {
             error = 'Relay restarted before this task finished.'
         WHERE status IN ('queued', 'starting', 'running', 'stopping')
       `).run(now, now).changes;
+      const planningRuns = database.prepare(`
+        UPDATE orchestration_runs
+        SET status = 'blocked', updated_at = ?, completed_at = ?,
+            error = 'Relay restarted before planning finished.',
+            planning_error = 'Relay restarted before planning finished.'
+        WHERE status = 'planning'
+      `).run(now, now).changes;
       database.prepare(`
         UPDATE orchestration_runs
         SET status = 'blocked', updated_at = ?, completed_at = ?,
             error = 'Relay restarted before this run finished.'
-        WHERE status IN ('queued', 'running', 'stopping')
+        WHERE status IN ('queued', 'running', 'stopping', 'summarizing')
       `).run(now, now);
       const integrations = database.prepare(`
         UPDATE orchestration_tasks
@@ -512,7 +569,13 @@ export class RelayDatabase {
             updated_at = ?
         WHERE verification_status = 'running'
       `).run(now).changes;
-      return tasks + integrations + verifications;
+      const syntheses = database.prepare(`
+        UPDATE orchestration_runs
+        SET synthesis_status = 'fallback',
+            synthesis_error = 'Relay restarted during final synthesis.', updated_at = ?
+        WHERE synthesis_status = 'running'
+      `).run(now).changes;
+      return tasks + planningRuns + integrations + verifications + syntheses;
     });
     return recover();
   }
@@ -523,8 +586,12 @@ export class RelayDatabase {
         (id, objective, repo_root, base_branch, status, strategy, concurrency, created_at,
          updated_at, started_at, completed_at, error, integration_status, integration_error,
          verification_status, verification_provider, verification_terminal_id,
-         verification_summary, verification_error, template_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         verification_summary, verification_error, template_id, planning_provider,
+         planning_model, planning_terminal_id, planning_summary, planning_error, planning_source,
+         planning_providers_json, planning_profile_ids_json, parent_run_id, replan_context,
+         synthesis_status, synthesis_provider, synthesis_model, synthesis_terminal_id,
+         final_summary, synthesis_error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         objective = excluded.objective,
         repo_root = excluded.repo_root,
@@ -543,14 +610,35 @@ export class RelayDatabase {
         verification_terminal_id = excluded.verification_terminal_id,
         verification_summary = excluded.verification_summary,
         verification_error = excluded.verification_error,
-        template_id = excluded.template_id
+        template_id = excluded.template_id,
+        planning_provider = excluded.planning_provider,
+        planning_model = excluded.planning_model,
+        planning_terminal_id = excluded.planning_terminal_id,
+        planning_summary = excluded.planning_summary,
+        planning_error = excluded.planning_error,
+        planning_source = excluded.planning_source,
+        planning_providers_json = excluded.planning_providers_json,
+        planning_profile_ids_json = excluded.planning_profile_ids_json,
+        parent_run_id = excluded.parent_run_id,
+        replan_context = excluded.replan_context,
+        synthesis_status = excluded.synthesis_status,
+        synthesis_provider = excluded.synthesis_provider,
+        synthesis_model = excluded.synthesis_model,
+        synthesis_terminal_id = excluded.synthesis_terminal_id,
+        final_summary = excluded.final_summary,
+        synthesis_error = excluded.synthesis_error
     `).run(
       run.id, run.objective, run.repoRoot, run.baseBranch, run.status, run.strategy, run.concurrency,
       run.createdAt, run.updatedAt, run.startedAt ?? null, run.completedAt ?? null, run.error ?? null,
       run.integrationStatus ?? 'pending', run.integrationError ?? null,
       run.verificationStatus ?? 'idle', run.verificationProvider ?? null,
       run.verificationTerminalId ?? null, run.verificationSummary ?? null, run.verificationError ?? null,
-      run.templateId ?? null
+      run.templateId ?? null, run.planningProvider ?? null, run.planningModel ?? null,
+      run.planningTerminalId ?? null, run.planningSummary ?? null, run.planningError ?? null,
+      run.planningSource ?? null, JSON.stringify(run.planningProviders ?? []),
+      JSON.stringify(run.planningProfileIds ?? []), run.parentRunId ?? null, run.replanContext ?? null,
+      run.synthesisStatus ?? 'idle', run.synthesisProvider ?? null, run.synthesisModel ?? null,
+      run.synthesisTerminalId ?? null, run.finalSummary ?? null, run.synthesisError ?? null
     );
   }
 
@@ -559,10 +647,11 @@ export class RelayDatabase {
       INSERT INTO orchestration_tasks
         (id, run_id, ordinal, title, instructions, role, deliverable, provider, status, attempt,
          worktree_id, worktree_path, branch, terminal_id, summary, error,
+         blocker,
          created_at, updated_at, started_at, completed_at, review_status, integration_status,
          integration_commit, integration_error, reviewed_at, integrated_at,
          profile_id, agent_name, avatar_seed, model, profile_instructions)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         instructions = excluded.instructions,
@@ -577,6 +666,7 @@ export class RelayDatabase {
         terminal_id = excluded.terminal_id,
         summary = excluded.summary,
         error = excluded.error,
+        blocker = excluded.blocker,
         updated_at = excluded.updated_at,
         started_at = excluded.started_at,
         completed_at = excluded.completed_at,
@@ -595,6 +685,7 @@ export class RelayDatabase {
       task.id, task.runId, task.ordinal, task.title, task.instructions, task.role, task.deliverable, task.provider,
       task.status, task.attempt, task.worktreeId ?? null, task.worktreePath ?? null,
       task.branch ?? null, task.terminalId ?? null, task.summary ?? null, task.error ?? null,
+      task.blocker ?? null,
       task.createdAt, task.updatedAt, task.startedAt ?? null, task.completedAt ?? null,
       task.reviewStatus ?? 'pending', task.integrationStatus ?? 'pending',
       task.integrationCommit ?? null, task.integrationError ?? null,
@@ -681,14 +772,22 @@ const RUN_SELECT = `
          verification_status AS verificationStatus, verification_provider AS verificationProvider,
          verification_terminal_id AS verificationTerminalId,
          verification_summary AS verificationSummary, verification_error AS verificationError,
-         template_id AS templateId
+         template_id AS templateId, planning_provider AS planningProvider,
+         planning_model AS planningModel, planning_terminal_id AS planningTerminalId,
+         planning_summary AS planningSummary, planning_error AS planningError,
+         planning_source AS planningSource, planning_providers_json AS planningProvidersJson,
+         planning_profile_ids_json AS planningProfileIdsJson, parent_run_id AS parentRunId,
+         replan_context AS replanContext, synthesis_status AS synthesisStatus,
+         synthesis_provider AS synthesisProvider, synthesis_model AS synthesisModel,
+         synthesis_terminal_id AS synthesisTerminalId, final_summary AS finalSummary,
+         synthesis_error AS synthesisError
   FROM orchestration_runs
 `;
 
 const TASK_SELECT = `
   SELECT id, run_id AS runId, ordinal, title, instructions, role, deliverable, provider, status,
          attempt, worktree_id AS worktreeId, worktree_path AS worktreePath,
-         branch, terminal_id AS terminalId, summary, error,
+         branch, terminal_id AS terminalId, summary, error, blocker,
          created_at AS createdAt, updated_at AS updatedAt,
          started_at AS startedAt, completed_at AS completedAt,
          review_status AS reviewStatus, integration_status AS integrationStatus,
@@ -703,7 +802,10 @@ type RunRow = Omit<
   OrchestrationRun,
   | 'startedAt' | 'completedAt' | 'error' | 'integrationError'
   | 'verificationProvider' | 'verificationTerminalId' | 'verificationSummary' | 'verificationError'
-  | 'templateId'
+  | 'templateId' | 'planningProvider' | 'planningModel' | 'planningTerminalId'
+  | 'planningSummary' | 'planningError' | 'planningSource' | 'planningProviders'
+  | 'planningProfileIds' | 'parentRunId' | 'replanContext' | 'synthesisProvider'
+  | 'synthesisModel' | 'synthesisTerminalId' | 'finalSummary' | 'synthesisError'
 > & {
   startedAt: number | null;
   completedAt: number | null;
@@ -714,11 +816,26 @@ type RunRow = Omit<
   verificationSummary: string | null;
   verificationError: string | null;
   templateId: string | null;
+  planningProvider: OrchestrationRun['planningProvider'] | null;
+  planningModel: string | null;
+  planningTerminalId: string | null;
+  planningSummary: string | null;
+  planningError: string | null;
+  planningSource: OrchestrationRun['planningSource'] | null;
+  planningProvidersJson: string | null;
+  planningProfileIdsJson: string | null;
+  parentRunId: string | null;
+  replanContext: string | null;
+  synthesisProvider: OrchestrationRun['synthesisProvider'] | null;
+  synthesisModel: string | null;
+  synthesisTerminalId: string | null;
+  finalSummary: string | null;
+  synthesisError: string | null;
 };
 
 type TaskRow = Omit<
   OrchestrationTask,
-  | 'worktreeId' | 'worktreePath' | 'branch' | 'terminalId' | 'summary' | 'error'
+  | 'worktreeId' | 'worktreePath' | 'branch' | 'terminalId' | 'summary' | 'error' | 'blocker'
   | 'startedAt' | 'completedAt' | 'integrationCommit' | 'integrationError'
   | 'reviewedAt' | 'integratedAt' | 'profileId' | 'agentName' | 'avatarSeed' | 'model'
   | 'profileInstructions'
@@ -729,6 +846,7 @@ type TaskRow = Omit<
   terminalId: string | null;
   summary: string | null;
   error: string | null;
+  blocker: string | null;
   startedAt: number | null;
   completedAt: number | null;
   integrationCommit: string | null;
@@ -743,8 +861,9 @@ type TaskRow = Omit<
 };
 
 function runFromRow(row: RunRow): OrchestrationRun {
+  const { planningProvidersJson, planningProfileIdsJson, ...run } = row;
   return {
-    ...row,
+    ...run,
     startedAt: row.startedAt ?? undefined,
     completedAt: row.completedAt ?? undefined,
     error: row.error ?? undefined,
@@ -753,8 +872,33 @@ function runFromRow(row: RunRow): OrchestrationRun {
     verificationTerminalId: row.verificationTerminalId ?? undefined,
     verificationSummary: row.verificationSummary ?? undefined,
     verificationError: row.verificationError ?? undefined,
-    templateId: row.templateId ?? undefined
+    templateId: row.templateId ?? undefined,
+    planningProvider: row.planningProvider ?? undefined,
+    planningModel: row.planningModel ?? undefined,
+    planningTerminalId: row.planningTerminalId ?? undefined,
+    planningSummary: row.planningSummary ?? undefined,
+    planningError: row.planningError ?? undefined,
+    planningSource: row.planningSource ?? undefined,
+    planningProviders: jsonStringArray(planningProvidersJson) as OrchestrationRun['planningProviders'],
+    planningProfileIds: jsonStringArray(planningProfileIdsJson),
+    parentRunId: row.parentRunId ?? undefined,
+    replanContext: row.replanContext ?? undefined,
+    synthesisProvider: row.synthesisProvider ?? undefined,
+    synthesisModel: row.synthesisModel ?? undefined,
+    synthesisTerminalId: row.synthesisTerminalId ?? undefined,
+    finalSummary: row.finalSummary ?? undefined,
+    synthesisError: row.synthesisError ?? undefined
   };
+}
+
+function jsonStringArray(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 function taskFromRow(row: TaskRow): OrchestrationTask {
@@ -766,6 +910,7 @@ function taskFromRow(row: TaskRow): OrchestrationTask {
     terminalId: row.terminalId ?? undefined,
     summary: row.summary ?? undefined,
     error: row.error ?? undefined,
+    blocker: row.blocker ?? undefined,
     startedAt: row.startedAt ?? undefined,
     completedAt: row.completedAt ?? undefined,
     integrationCommit: row.integrationCommit ?? undefined,

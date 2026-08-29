@@ -10,6 +10,7 @@ import type {
   ExtensionDeleteRequest,
   OrchestratorRenameRequest,
   OrchestrationCreateRequest,
+  OrchestrationReplanRequest,
   OrchestrationReviewRequest,
   OrchestrationRunRequest,
   OrchestrationTaskRequest,
@@ -140,7 +141,9 @@ async function buildDiagnostics(): Promise<RuntimeDiagnostics> {
   return {
     uptimeMs: Math.round(process.uptime() * 1000),
     activeTerminals: ptyManager?.list().filter((terminal) => terminal.status !== 'exited').length ?? 0,
-    runningOrchestrations: runs.filter(({ run }) => ['queued', 'running', 'stopping'].includes(run.status)).length,
+    runningOrchestrations: runs.filter(({ run }) =>
+      ['planning', 'queued', 'running', 'summarizing', 'stopping'].includes(run.status)
+    ).length,
     managedWorktrees: repository?.worktrees.filter((worktree) => worktree.managed && !worktree.isMain).length ?? 0,
     missingWorktrees: repository?.worktrees.filter((worktree) => worktree.status === 'missing').length ?? 0,
     activityEvents: database.countEvents(),
@@ -182,6 +185,11 @@ function bootstrapWorkspace(config: WorkspaceConfig): void {
       terminals: ptyManager,
       detectProviders,
       getOrchestratorName: () => workspaceConfig.orchestratorName,
+      getOrchestratorConfig: () => ({
+        provider: workspaceConfig.orchestratorProvider,
+        model: workspaceConfig.orchestratorModel
+      }),
+      onCoordinationMessage: (message) => nextHive.appendMessage(message),
       onUpdate: (snapshot) => {
         nextHive.syncOrchestrations(nextDatabase.listOrchestrations());
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -368,6 +376,12 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC.orchestrationCreate, (_event, request: OrchestrationCreateRequest) => {
     if (!orchestrator) throw new Error('The orchestrator is not ready.');
     return orchestrator.create(request);
+  });
+  ipcMain.handle(IPC.orchestrationReplan, (_event, request: OrchestrationReplanRequest) => {
+    if (!orchestrator || !request || typeof request.runId !== 'string') {
+      throw new Error('Invalid re-plan request.');
+    }
+    return orchestrator.replan(request);
   });
   ipcMain.handle(IPC.orchestrationStop, (_event, runId: unknown) => {
     if (!orchestrator || typeof runId !== 'string') return { ok: false, error: 'Invalid orchestrator run.' };

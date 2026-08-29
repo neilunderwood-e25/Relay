@@ -9,6 +9,7 @@ import {
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
+  HiveCoordinationMessage,
   HiveHealth,
   OrchestrationSnapshot,
   OrchestrationTaskStatus,
@@ -51,6 +52,7 @@ interface HiveTaskCard {
   worktreePath?: string;
   result?: string;
   error?: string;
+  blocker?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,8 +75,9 @@ The hive is Relay's durable coordination space. The Electron main process owns s
 - \`board.md\` is ${orchestratorName}'s narrative plan.
 - \`tasks.json\` is the structured task ledger.
 - \`log.jsonl\` is the append-only event stream.
+- \`messages.jsonl\` is the append-only worker-to-orchestrator message stream.
 
-Workers must never write into another agent's directory. Relay will add message routing in a later phase.
+Workers must never write into another agent's directory. ${orchestratorName}'s model-driven plans and outcomes are projected onto the shared board and task ledger by Relay.
 `;
 }
 
@@ -105,6 +108,7 @@ export class HiveManager {
       this.migrateLegacyBoard();
       this.writeJsonIfMissing(join(this.root, 'tasks.json'), { version: 1, tasks: [] });
       this.writeIfMissing(join(this.root, 'log.jsonl'), '');
+      this.writeIfMissing(join(this.root, 'messages.jsonl'), '');
       this.writeIfMissing(
         join(this.agentRoot, 'memory.md'),
         `# ${this.orchestratorName} memory\n\n_Append durable decisions, project context, and coordination lessons here._\n`
@@ -187,13 +191,15 @@ export class HiveManager {
       worktreePath: task.worktreePath,
       result: task.summary,
       error: task.error,
+      blocker: task.blocker,
       createdAt: new Date(task.createdAt).toISOString(),
       updatedAt: new Date(task.updatedAt).toISOString()
     })));
     this.atomicWriteJson(join(this.root, 'tasks.json'), { version: 1, tasks: [...external, ...tasks] });
+    this.syncBoard(snapshots);
 
     const latest = snapshots[0]?.run;
-    const status = latest && ['queued', 'running', 'stopping'].includes(latest.status)
+    const status = latest && ['planning', 'queued', 'running', 'summarizing', 'stopping'].includes(latest.status)
       ? 'working'
       : latest && ['blocked', 'failed'].includes(latest.status)
         ? 'blocked'
@@ -208,6 +214,52 @@ export class HiveManager {
       kind,
       ...payload
     })}\n`, 'utf8');
+  }
+
+  appendMessage(message: HiveCoordinationMessage): void {
+    if (!this.ready) return;
+    const safe = {
+      ...message,
+      body: message.body.replace(/[\r\n]+/g, ' ').trim().slice(0, 2_000)
+    };
+    appendFileSync(join(this.root, 'messages.jsonl'), `${JSON.stringify(safe)}\n`, 'utf8');
+    this.atomicWrite(
+      join(this.agentRoot, 'inbox', `${safe.createdAt}-${safe.id}.json`),
+      `${JSON.stringify(safe, null, 2)}\n`
+    );
+    this.appendEvent('hive.message', {
+      messageId: safe.id,
+      runId: safe.runId,
+      taskId: safe.taskId,
+      kind: safe.kind,
+      from: safe.from
+    });
+  }
+
+  private syncBoard(snapshots: OrchestrationSnapshot[]): void {
+    const latest = snapshots[0];
+    const content = latest
+      ? [
+          '# Relay board',
+          '',
+          `_${this.orchestratorName} owns this shared plan._`,
+          '',
+          `## ${latest.run.objective}`,
+          '',
+          `- Status: ${latest.run.status}`,
+          `- Strategy: ${latest.run.strategy}`,
+          latest.run.planningSummary ? `- Plan: ${latest.run.planningSummary}` : '- Plan: preparing',
+          latest.run.planningSource ? `- Source: ${latest.run.planningSource}` : '',
+          latest.run.parentRunId ? `- Re-plan of: ${latest.run.parentRunId}` : '',
+          latest.run.finalSummary ? `- Outcome: ${latest.run.finalSummary.replace(/\s+/g, ' ').slice(0, 500)}` : '',
+          '',
+          ...latest.tasks.map((task) =>
+            `- [${task.status === 'completed' ? 'x' : ' '}] ${task.title} — ${task.agentName ?? personNameForSeed(task.id)} (${task.provider})${task.blocker ? ` — Blocked: ${task.blocker}` : ''}`
+          ),
+          ''
+        ].filter(Boolean).join('\n')
+      : `# Relay board\n\n_${this.orchestratorName} owns this shared plan._\n`;
+    this.atomicWrite(join(this.root, 'board.md'), `${content}\n`);
   }
 
   private refreshRegistry(status: 'idle' | 'working' | 'blocked'): void {

@@ -204,7 +204,7 @@ export function OrchestratorWorkspace({
       : planObjective(objective.trim(), selectedProviders, strategy);
   }, [objective, selectedProfiles, selectedProviders, strategy]);
   const selectedRun = runs.find(({ run }) => run.id === selectedRunId) ?? runs[0] ?? null;
-  const activeCount = runs.filter(({ run }) => ['queued', 'running', 'stopping'].includes(run.status)).length;
+  const activeCount = runs.filter(({ run }) => ['planning', 'queued', 'running', 'summarizing', 'stopping'].includes(run.status)).length;
 
   const toggleProvider = (provider: ProviderId): void => {
     if (!availableProviders.includes(provider)) return;
@@ -280,6 +280,20 @@ export function OrchestratorWorkspace({
     setError(null);
     const result = await window.relay.stopOrchestration(runId);
     if (!result.ok) setError(result.error ?? 'Could not stop this run.');
+  };
+
+  const replan = async (snapshot: OrchestrationSnapshot): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await window.relay.replanOrchestration({ runId: snapshot.run.id });
+      setRuns((current) => [created, ...current]);
+      setSelectedRunId(created.run.id);
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const retry = async (taskId: string): Promise<void> => {
@@ -506,7 +520,9 @@ export function OrchestratorWorkspace({
             {selectedRun ? (
               <MissionCard
                 snapshot={selectedRun}
+                orchestratorName={orchestratorName}
                 onStop={stop}
+                onReplan={replan}
                 onRetry={retry}
                 onOpenTerminal={onOpenTerminal}
                 onSnapshot={replaceRun}
@@ -543,9 +559,11 @@ export function OrchestratorWorkspace({
   );
 }
 
-function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal, onSnapshot, onError, verificationProvider }: {
+function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, onOpenTerminal, onSnapshot, onError, verificationProvider }: {
   snapshot: OrchestrationSnapshot;
+  orchestratorName: string;
   onStop: (runId: string) => Promise<void>;
+  onReplan: (snapshot: OrchestrationSnapshot) => Promise<void>;
   onRetry: (taskId: string) => Promise<void>;
   onOpenTerminal: (terminalId: string) => void;
   onSnapshot: (snapshot: OrchestrationSnapshot) => void;
@@ -562,7 +580,7 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal, onSnapshot, on
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
   const completed = tasks.filter((task) => task.status === 'completed').length;
   const progress = tasks.length > 0 ? Math.round((completed / tasks.length) * 100) : 0;
-  const active = ['queued', 'running', 'stopping'].includes(run.status);
+  const active = ['planning', 'queued', 'running', 'summarizing', 'stopping'].includes(run.status);
   const reviewed = tasks.filter((task) => (task.reviewStatus ?? 'pending') !== 'pending').length;
   const accepted = tasks.filter((task) => task.reviewStatus === 'accepted').length;
   const reviewReady = run.status === 'completed' && reviewed === tasks.length && accepted > 0;
@@ -626,6 +644,13 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal, onSnapshot, on
         </div>
         <div className="orchestrator-run-meta">
           <StatusBadge status={run.status} />
+          {['blocked', 'failed', 'stopped'].includes(run.status) && (
+            <Tooltip content="Re-plan run">
+              <Button variant="ghost" size="icon" aria-label="Re-plan run" onClick={() => void onReplan(snapshot)}>
+                <Icon icon={RepeatIcon} size={15} />
+              </Button>
+            </Tooltip>
+          )}
           {active && (
             <Tooltip content="Stop run">
               <Button variant="ghost" size="icon" className="danger-icon-button" aria-label="Stop run" onClick={() => void onStop(run.id)}>
@@ -684,6 +709,69 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal, onSnapshot, on
         </div>
       )}
       <CardContent className="orchestrator-mission-content">
+        {run.status === 'planning' && (
+          <div className="orchestrator-planning-state">
+            <AgentAvatar seed="relay-orchestrator" name={orchestratorName} className="planning-agent-avatar" />
+            <div><strong>{orchestratorName} is planning</strong><span>Inspecting the project and choosing the team.</span></div>
+            {run.planningTerminalId && (
+              <Tooltip content="Open planner">
+                <Button size="icon-sm" variant="ghost" aria-label="Open planner" onClick={() => onOpenTerminal(run.planningTerminalId!)}>
+                  <Icon icon={SquareTerminalIcon} size={13} />
+                </Button>
+              </Tooltip>
+            )}
+          </div>
+        )}
+        {run.status === 'summarizing' && (
+          <div className="orchestrator-planning-state">
+            <AgentAvatar seed="relay-orchestrator" name={orchestratorName} className="planning-agent-avatar" />
+            <div><strong>{orchestratorName} is reviewing</strong><span>Combining the worker outcomes.</span></div>
+            {run.synthesisTerminalId && (
+              <Tooltip content="Open outcome">
+                <Button size="icon-sm" variant="ghost" aria-label="Open outcome" onClick={() => onOpenTerminal(run.synthesisTerminalId!)}>
+                  <Icon icon={SquareTerminalIcon} size={13} />
+                </Button>
+              </Tooltip>
+            )}
+          </div>
+        )}
+        {run.planningSummary && run.status !== 'planning' && (
+          <div className={`orchestrator-plan-summary ${run.planningSource ?? 'model'}`}>
+            <Icon icon={WorkflowIcon} size={14} />
+            <span>{run.planningSummary}</span>
+            {run.planningSource === 'fallback' && <Badge variant="secondary">Fallback</Badge>}
+            {run.planningTerminalId && (
+              <Tooltip content="Open planner">
+                <Button size="icon-sm" variant="ghost" aria-label="Open planner" onClick={() => onOpenTerminal(run.planningTerminalId!)}>
+                  <Icon icon={SquareTerminalIcon} size={13} />
+                </Button>
+              </Tooltip>
+            )}
+          </div>
+        )}
+        {run.planningError && run.planningSource === 'fallback' && (
+          <Alert className="planning-alert"><Icon icon={Alert02Icon} size={14} /><AlertDescription>{run.planningError}</AlertDescription></Alert>
+        )}
+        {run.finalSummary && run.status !== 'summarizing' && (
+          <div className={`orchestrator-outcome ${run.synthesisStatus ?? 'completed'}`}>
+            <div>
+              <Icon icon={CheckmarkCircle02Icon} size={14} />
+              <strong>Outcome</strong>
+              {run.synthesisStatus === 'fallback' && <Badge variant="secondary">Fallback</Badge>}
+              {run.synthesisTerminalId && (
+                <Tooltip content="Open outcome">
+                  <Button size="icon-sm" variant="ghost" aria-label="Open outcome" onClick={() => onOpenTerminal(run.synthesisTerminalId!)}>
+                    <Icon icon={SquareTerminalIcon} size={13} />
+                  </Button>
+                </Tooltip>
+              )}
+            </div>
+            <pre>{run.finalSummary}</pre>
+          </div>
+        )}
+        {run.synthesisError && run.synthesisStatus === 'fallback' && (
+          <Alert className="planning-alert"><Icon icon={Alert02Icon} size={14} /><AlertDescription>{run.synthesisError}</AlertDescription></Alert>
+        )}
         {run.integrationError && (
           <Alert variant="destructive" className="integration-alert">
             <Icon icon={Alert02Icon} size={14} /><AlertDescription>{run.integrationError}</AlertDescription>
@@ -784,9 +872,9 @@ function TaskDetail({ task, onRetry, onOpenTerminal, onReview }: {
           {task.branch && <span><Icon icon={GitBranchIcon} size={11} />{task.branch.replace(/^(?:relay|foundry)\//, '')}</span>}
         </div>
         <p>{task.instructions}</p>
-        {(task.error || task.integrationError || task.summary) && (
-          <pre className={task.error || task.integrationError ? 'error' : ''}>
-            {task.error ?? task.integrationError ?? task.summary}
+        {(task.blocker || task.error || task.integrationError || task.summary) && (
+          <pre className={task.blocker || task.error || task.integrationError ? 'error' : ''}>
+            {task.blocker ?? task.error ?? task.integrationError ?? task.summary}
           </pre>
         )}
       </div>
