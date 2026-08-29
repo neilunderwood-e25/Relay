@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import type {
+  AgentProfile,
   ActivityCategory,
   ActivityEvent,
   ActivityListRequest,
@@ -8,6 +9,7 @@ import type {
   OrchestrationRun,
   OrchestrationSnapshot,
   OrchestrationTask,
+  OrchestrationTemplate,
   WorktreeRecord
 } from '../shared/contracts';
 
@@ -139,6 +141,42 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_orchestration_runs_verification_terminal
         ON orchestration_runs(verification_terminal_id);
     `);
+  },
+  (database) => {
+    database.exec(`
+      CREATE TABLE agent_profiles (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        provider     TEXT NOT NULL,
+        model        TEXT,
+        instructions TEXT NOT NULL,
+        avatar_seed  TEXT NOT NULL,
+        enabled      INTEGER NOT NULL,
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      );
+
+      CREATE TABLE orchestration_templates (
+        id               TEXT PRIMARY KEY,
+        name             TEXT NOT NULL,
+        objective        TEXT NOT NULL,
+        strategy         TEXT NOT NULL,
+        profile_ids_json TEXT NOT NULL,
+        concurrency      INTEGER NOT NULL,
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL
+      );
+
+      ALTER TABLE orchestration_runs ADD COLUMN template_id TEXT;
+      ALTER TABLE orchestration_tasks ADD COLUMN profile_id TEXT;
+      ALTER TABLE orchestration_tasks ADD COLUMN agent_name TEXT;
+      ALTER TABLE orchestration_tasks ADD COLUMN avatar_seed TEXT;
+      ALTER TABLE orchestration_tasks ADD COLUMN model TEXT;
+      ALTER TABLE orchestration_tasks ADD COLUMN profile_instructions TEXT;
+
+      CREATE INDEX idx_agent_profiles_provider ON agent_profiles(provider, created_at);
+      CREATE INDEX idx_orchestration_templates_created ON orchestration_templates(created_at);
+    `);
   }
 ];
 
@@ -242,6 +280,85 @@ export class RelayDatabase {
   countEvents(): number {
     const row = this.requireOpen().prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number };
     return row.count;
+  }
+
+  listAgentProfiles(): AgentProfile[] {
+    return (this.requireOpen().prepare(`
+      SELECT id, name, provider, model, instructions, avatar_seed AS avatarSeed,
+             enabled, created_at AS createdAt, updated_at AS updatedAt
+      FROM agent_profiles ORDER BY created_at, name
+    `).all() as AgentProfileRow[]).map(agentProfileFromRow);
+  }
+
+  getAgentProfile(id: string): AgentProfile | undefined {
+    const row = this.requireOpen().prepare(`
+      SELECT id, name, provider, model, instructions, avatar_seed AS avatarSeed,
+             enabled, created_at AS createdAt, updated_at AS updatedAt
+      FROM agent_profiles WHERE id = ?
+    `).get(id) as AgentProfileRow | undefined;
+    return row ? agentProfileFromRow(row) : undefined;
+  }
+
+  upsertAgentProfile(profile: AgentProfile): void {
+    this.requireOpen().prepare(`
+      INSERT INTO agent_profiles
+        (id, name, provider, model, instructions, avatar_seed, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        provider = excluded.provider,
+        model = excluded.model,
+        instructions = excluded.instructions,
+        avatar_seed = excluded.avatar_seed,
+        enabled = excluded.enabled,
+        updated_at = excluded.updated_at
+    `).run(
+      profile.id, profile.name, profile.provider, profile.model, profile.instructions,
+      profile.avatarSeed, profile.enabled ? 1 : 0, profile.createdAt, profile.updatedAt
+    );
+  }
+
+  deleteAgentProfile(id: string): boolean {
+    return this.requireOpen().prepare('DELETE FROM agent_profiles WHERE id = ?').run(id).changes > 0;
+  }
+
+  listOrchestrationTemplates(): OrchestrationTemplate[] {
+    return (this.requireOpen().prepare(`
+      SELECT id, name, objective, strategy, profile_ids_json AS profileIdsJson,
+             concurrency, created_at AS createdAt, updated_at AS updatedAt
+      FROM orchestration_templates ORDER BY created_at, name
+    `).all() as OrchestrationTemplateRow[]).map(orchestrationTemplateFromRow);
+  }
+
+  getOrchestrationTemplate(id: string): OrchestrationTemplate | undefined {
+    const row = this.requireOpen().prepare(`
+      SELECT id, name, objective, strategy, profile_ids_json AS profileIdsJson,
+             concurrency, created_at AS createdAt, updated_at AS updatedAt
+      FROM orchestration_templates WHERE id = ?
+    `).get(id) as OrchestrationTemplateRow | undefined;
+    return row ? orchestrationTemplateFromRow(row) : undefined;
+  }
+
+  upsertOrchestrationTemplate(template: OrchestrationTemplate): void {
+    this.requireOpen().prepare(`
+      INSERT INTO orchestration_templates
+        (id, name, objective, strategy, profile_ids_json, concurrency, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        objective = excluded.objective,
+        strategy = excluded.strategy,
+        profile_ids_json = excluded.profile_ids_json,
+        concurrency = excluded.concurrency,
+        updated_at = excluded.updated_at
+    `).run(
+      template.id, template.name, template.objective, template.strategy,
+      JSON.stringify(template.profileIds), template.concurrency, template.createdAt, template.updatedAt
+    );
+  }
+
+  deleteOrchestrationTemplate(id: string): boolean {
+    return this.requireOpen().prepare('DELETE FROM orchestration_templates WHERE id = ?').run(id).changes > 0;
   }
 
   listWorktrees(repoRoot?: string): WorktreeRecord[] {
@@ -406,8 +523,8 @@ export class RelayDatabase {
         (id, objective, repo_root, base_branch, status, strategy, concurrency, created_at,
          updated_at, started_at, completed_at, error, integration_status, integration_error,
          verification_status, verification_provider, verification_terminal_id,
-         verification_summary, verification_error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         verification_summary, verification_error, template_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         objective = excluded.objective,
         repo_root = excluded.repo_root,
@@ -425,13 +542,15 @@ export class RelayDatabase {
         verification_provider = excluded.verification_provider,
         verification_terminal_id = excluded.verification_terminal_id,
         verification_summary = excluded.verification_summary,
-        verification_error = excluded.verification_error
+        verification_error = excluded.verification_error,
+        template_id = excluded.template_id
     `).run(
       run.id, run.objective, run.repoRoot, run.baseBranch, run.status, run.strategy, run.concurrency,
       run.createdAt, run.updatedAt, run.startedAt ?? null, run.completedAt ?? null, run.error ?? null,
       run.integrationStatus ?? 'pending', run.integrationError ?? null,
       run.verificationStatus ?? 'idle', run.verificationProvider ?? null,
-      run.verificationTerminalId ?? null, run.verificationSummary ?? null, run.verificationError ?? null
+      run.verificationTerminalId ?? null, run.verificationSummary ?? null, run.verificationError ?? null,
+      run.templateId ?? null
     );
   }
 
@@ -441,8 +560,9 @@ export class RelayDatabase {
         (id, run_id, ordinal, title, instructions, role, deliverable, provider, status, attempt,
          worktree_id, worktree_path, branch, terminal_id, summary, error,
          created_at, updated_at, started_at, completed_at, review_status, integration_status,
-         integration_commit, integration_error, reviewed_at, integrated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         integration_commit, integration_error, reviewed_at, integrated_at,
+         profile_id, agent_name, avatar_seed, model, profile_instructions)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         instructions = excluded.instructions,
@@ -459,13 +579,18 @@ export class RelayDatabase {
         error = excluded.error,
         updated_at = excluded.updated_at,
         started_at = excluded.started_at,
-        completed_at = excluded.completed_at
-        ,review_status = excluded.review_status
-        ,integration_status = excluded.integration_status
-        ,integration_commit = excluded.integration_commit
-        ,integration_error = excluded.integration_error
-        ,reviewed_at = excluded.reviewed_at
-        ,integrated_at = excluded.integrated_at
+        completed_at = excluded.completed_at,
+        review_status = excluded.review_status,
+        integration_status = excluded.integration_status,
+        integration_commit = excluded.integration_commit,
+        integration_error = excluded.integration_error,
+        reviewed_at = excluded.reviewed_at,
+        integrated_at = excluded.integrated_at,
+        profile_id = excluded.profile_id,
+        agent_name = excluded.agent_name,
+        avatar_seed = excluded.avatar_seed,
+        model = excluded.model,
+        profile_instructions = excluded.profile_instructions
     `).run(
       task.id, task.runId, task.ordinal, task.title, task.instructions, task.role, task.deliverable, task.provider,
       task.status, task.attempt, task.worktreeId ?? null, task.worktreePath ?? null,
@@ -473,7 +598,9 @@ export class RelayDatabase {
       task.createdAt, task.updatedAt, task.startedAt ?? null, task.completedAt ?? null,
       task.reviewStatus ?? 'pending', task.integrationStatus ?? 'pending',
       task.integrationCommit ?? null, task.integrationError ?? null,
-      task.reviewedAt ?? null, task.integratedAt ?? null
+      task.reviewedAt ?? null, task.integratedAt ?? null,
+      task.profileId ?? null, task.agentName ?? null, task.avatarSeed ?? null, task.model ?? null,
+      task.profileInstructions ?? null
     );
   }
 
@@ -521,6 +648,31 @@ function activityCategory(value: ActivityCategory | undefined): ActivityCategory
     : 'all';
 }
 
+type AgentProfileRow = Omit<AgentProfile, 'model' | 'enabled'> & {
+  model: string | null;
+  enabled: number;
+};
+
+function agentProfileFromRow(row: AgentProfileRow): AgentProfile {
+  return { ...row, model: row.model ?? null, enabled: row.enabled === 1 };
+}
+
+type OrchestrationTemplateRow = Omit<OrchestrationTemplate, 'profileIds'> & {
+  profileIdsJson: string;
+};
+
+function orchestrationTemplateFromRow(row: OrchestrationTemplateRow): OrchestrationTemplate {
+  let profileIds: string[] = [];
+  try {
+    const parsed = JSON.parse(row.profileIdsJson) as unknown;
+    if (Array.isArray(parsed)) profileIds = parsed.filter((value): value is string => typeof value === 'string');
+  } catch {
+    profileIds = [];
+  }
+  const { profileIdsJson: _profileIdsJson, ...template } = row;
+  return { ...template, profileIds };
+}
+
 const RUN_SELECT = `
   SELECT id, objective, repo_root AS repoRoot, base_branch AS baseBranch, status,
          strategy, concurrency, created_at AS createdAt, updated_at AS updatedAt,
@@ -528,7 +680,8 @@ const RUN_SELECT = `
          integration_status AS integrationStatus, integration_error AS integrationError,
          verification_status AS verificationStatus, verification_provider AS verificationProvider,
          verification_terminal_id AS verificationTerminalId,
-         verification_summary AS verificationSummary, verification_error AS verificationError
+         verification_summary AS verificationSummary, verification_error AS verificationError,
+         template_id AS templateId
   FROM orchestration_runs
 `;
 
@@ -540,7 +693,9 @@ const TASK_SELECT = `
          started_at AS startedAt, completed_at AS completedAt,
          review_status AS reviewStatus, integration_status AS integrationStatus,
          integration_commit AS integrationCommit, integration_error AS integrationError,
-         reviewed_at AS reviewedAt, integrated_at AS integratedAt
+         reviewed_at AS reviewedAt, integrated_at AS integratedAt,
+         profile_id AS profileId, agent_name AS agentName, avatar_seed AS avatarSeed, model,
+         profile_instructions AS profileInstructions
   FROM orchestration_tasks
 `;
 
@@ -548,6 +703,7 @@ type RunRow = Omit<
   OrchestrationRun,
   | 'startedAt' | 'completedAt' | 'error' | 'integrationError'
   | 'verificationProvider' | 'verificationTerminalId' | 'verificationSummary' | 'verificationError'
+  | 'templateId'
 > & {
   startedAt: number | null;
   completedAt: number | null;
@@ -557,13 +713,15 @@ type RunRow = Omit<
   verificationTerminalId: string | null;
   verificationSummary: string | null;
   verificationError: string | null;
+  templateId: string | null;
 };
 
 type TaskRow = Omit<
   OrchestrationTask,
   | 'worktreeId' | 'worktreePath' | 'branch' | 'terminalId' | 'summary' | 'error'
   | 'startedAt' | 'completedAt' | 'integrationCommit' | 'integrationError'
-  | 'reviewedAt' | 'integratedAt'
+  | 'reviewedAt' | 'integratedAt' | 'profileId' | 'agentName' | 'avatarSeed' | 'model'
+  | 'profileInstructions'
 > & {
   worktreeId: string | null;
   worktreePath: string | null;
@@ -577,6 +735,11 @@ type TaskRow = Omit<
   integrationError: string | null;
   reviewedAt: number | null;
   integratedAt: number | null;
+  profileId: string | null;
+  agentName: string | null;
+  avatarSeed: string | null;
+  model: string | null;
+  profileInstructions: string | null;
 };
 
 function runFromRow(row: RunRow): OrchestrationRun {
@@ -589,7 +752,8 @@ function runFromRow(row: RunRow): OrchestrationRun {
     verificationProvider: row.verificationProvider ?? undefined,
     verificationTerminalId: row.verificationTerminalId ?? undefined,
     verificationSummary: row.verificationSummary ?? undefined,
-    verificationError: row.verificationError ?? undefined
+    verificationError: row.verificationError ?? undefined,
+    templateId: row.templateId ?? undefined
   };
 }
 
@@ -603,10 +767,15 @@ function taskFromRow(row: TaskRow): OrchestrationTask {
     summary: row.summary ?? undefined,
     error: row.error ?? undefined,
     startedAt: row.startedAt ?? undefined,
-    completedAt: row.completedAt ?? undefined
-    ,integrationCommit: row.integrationCommit ?? undefined
-    ,integrationError: row.integrationError ?? undefined
-    ,reviewedAt: row.reviewedAt ?? undefined
-    ,integratedAt: row.integratedAt ?? undefined
+    completedAt: row.completedAt ?? undefined,
+    integrationCommit: row.integrationCommit ?? undefined,
+    integrationError: row.integrationError ?? undefined,
+    reviewedAt: row.reviewedAt ?? undefined,
+    integratedAt: row.integratedAt ?? undefined,
+    profileId: row.profileId ?? undefined,
+    agentName: row.agentName ?? undefined,
+    avatarSeed: row.avatarSeed ?? undefined,
+    model: row.model ?? undefined,
+    profileInstructions: row.profileInstructions ?? undefined
   };
 }

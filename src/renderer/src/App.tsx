@@ -14,7 +14,8 @@ import {
 } from '../../shared/contracts';
 import { AppSidebar, type AppView } from './components/AppSidebar';
 import { ActivityWorkspace } from './components/ActivityWorkspace';
-import { RehanWorkspace } from './components/RehanWorkspace';
+import { LibraryWorkspace } from './components/LibraryWorkspace';
+import { OrchestratorWorkspace } from './components/OrchestratorWorkspace';
 import { SettingsWorkspace } from './components/SettingsWorkspace';
 import { StartupWizard } from './components/StartupWizard';
 import { TerminalWorkspace } from './components/TerminalWorkspace';
@@ -37,7 +38,7 @@ export function App(): React.JSX.Element {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [startupVerified, setStartupVerified] = useState(false);
   const [cwd, setCwd] = useState('');
-  const [activeView, setActiveView] = useState<AppView>('rehan');
+  const [activeView, setActiveView] = useState<AppView>('orchestrator');
   const [launching, setLaunching] = useState<ProviderId | null>(null);
   const hydrate = useTerminalStore((store) => store.hydrate);
   const upsert = useTerminalStore((store) => store.upsert);
@@ -208,14 +209,16 @@ export function App(): React.JSX.Element {
           />
 
           <main className="dashboard-inset">
-            {activeView === 'rehan' ? (
-              <RehanWorkspace
+            {activeView === 'orchestrator' ? (
+              <OrchestratorWorkspace
                 cwd={cwd}
                 providers={snapshot.providers}
                 orchestratorName={snapshot.workspace.orchestratorName}
                 orchestratorProvider={snapshot.workspace.orchestratorProvider}
                 orchestratorModel={snapshot.workspace.orchestratorModel}
                 preferences={snapshot.preferences}
+                profiles={snapshot.agentProfiles}
+                templates={snapshot.orchestrationTemplates}
                 onRenameOrchestrator={renameOrchestrator}
                 onChooseDirectory={() => void chooseDirectory()}
                 onOpenTerminal={(terminalId) => void openTerminal(terminalId)}
@@ -267,6 +270,15 @@ export function App(): React.JSX.Element {
                 onChooseDirectory={() => void chooseDirectory()}
                 onLaunch={async (provider, worktreeCwd) => {
                   if (await launch(provider, worktreeCwd)) setActiveView('console');
+                }}
+              />
+            ) : activeView === 'library' ? (
+              <LibraryWorkspace
+                profiles={snapshot.agentProfiles}
+                templates={snapshot.orchestrationTemplates}
+                providers={snapshot.providers}
+                onChange={(agentProfiles, orchestrationTemplates) => {
+                  setState({ status: 'ready', snapshot: { ...snapshot, agentProfiles, orchestrationTemplates } });
                 }}
               />
             ) : activeView === 'activity' ? (

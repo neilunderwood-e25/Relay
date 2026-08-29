@@ -178,7 +178,7 @@ export class HiveManager {
       title: task.title,
       description: task.instructions,
       deliverable: task.deliverable,
-      assignee: personNameForSeed(task.id),
+      assignee: task.agentName ?? personNameForSeed(task.id),
       provider: task.provider,
       role: task.role,
       status: ledgerStatus(task.status),

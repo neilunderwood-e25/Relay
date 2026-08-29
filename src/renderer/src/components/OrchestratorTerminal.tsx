@@ -89,7 +89,7 @@ export function OrchestratorTerminal({
     <Card className="terminal-card orchestrator-terminal-card">
       <CardHeader className="terminal-card-header">
         <div className="orchestrator-terminal-title">
-          <span className="rehan-command-icon"><Icon icon={SquareTerminalIcon} size={16} /></span>
+          <span className="orchestrator-command-icon"><Icon icon={SquareTerminalIcon} size={16} /></span>
           <div>
             <strong>{name}</strong>
             <span className={`terminal-state ${terminal?.status ?? 'exited'}`} />

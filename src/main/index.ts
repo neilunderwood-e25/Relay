@@ -4,13 +4,16 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
 import type { Logger } from 'pino';
 import type {
+  AgentProfileSaveRequest,
   ActivityListRequest,
   AppSnapshot,
+  ExtensionDeleteRequest,
   OrchestratorRenameRequest,
   OrchestrationCreateRequest,
   OrchestrationReviewRequest,
   OrchestrationRunRequest,
   OrchestrationTaskRequest,
+  OrchestrationTemplateSaveRequest,
   OrchestrationVerifyRequest,
   PreferencesUpdateRequest,
   RelayPreferences,
@@ -33,9 +36,10 @@ import {
 } from '../shared/orchestratorModels';
 import { WorkspaceConfigStore } from './config';
 import { RelayDatabase } from './database';
+import { ExtensionRegistry } from './extensions';
 import { HiveManager } from './hive';
 import { createAppLogger } from './logger';
-import { RehanOrchestrator } from './orchestrator';
+import { Orchestrator } from './orchestrator';
 import { detectProviders } from './providers';
 import { PtyManager } from './pty';
 import { normalizePreferences } from './preferences';
@@ -61,7 +65,8 @@ let database: RelayDatabase | null = null;
 let hive: HiveManager | null = null;
 let ptyManager: PtyManager | null = null;
 let worktreeManager: WorktreeManager | null = null;
-let rehan: RehanOrchestrator | null = null;
+let orchestrator: Orchestrator | null = null;
+let extensions: ExtensionRegistry | null = null;
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -117,6 +122,8 @@ async function buildAppSnapshot(): Promise<AppSnapshot> {
     },
     workspace: { ...workspaceConfig },
     preferences: readPreferences(),
+    agentProfiles: extensions?.listProfiles() ?? [],
+    orchestrationTemplates: extensions?.listTemplates() ?? [],
     providers: await detectProviders()
   };
 }
@@ -144,7 +151,7 @@ async function buildDiagnostics(): Promise<RuntimeDiagnostics> {
 }
 
 function bootstrapWorkspace(config: WorkspaceConfig): void {
-  if (database && hive && worktreeManager && rehan) return;
+  if (database && hive && worktreeManager && orchestrator) return;
   if (!logger || !ptyManager) throw new Error('Relay is not ready yet.');
   if (!config.harnessHome) throw new Error('Choose a Harness Home.');
 
@@ -167,7 +174,8 @@ function bootstrapWorkspace(config: WorkspaceConfig): void {
       logger,
       storageRoot: join(harnessHome, 'worktrees')
     });
-    const nextRehan = new RehanOrchestrator({
+    const nextExtensions = new ExtensionRegistry(nextDatabase);
+    const nextOrchestrator = new Orchestrator({
       database: nextDatabase,
       logger,
       worktrees: nextWorktrees,
@@ -182,7 +190,7 @@ function bootstrapWorkspace(config: WorkspaceConfig): void {
       }
     });
 
-    nextRehan.recover();
+    nextOrchestrator.recover();
     nextHive.syncOrchestrations(nextDatabase.listOrchestrations());
     nextDatabase.appendEvent('app.started', {
       version: app.getVersion(),
@@ -192,7 +200,8 @@ function bootstrapWorkspace(config: WorkspaceConfig): void {
     database = nextDatabase;
     hive = nextHive;
     worktreeManager = nextWorktrees;
-    rehan = nextRehan;
+    extensions = nextExtensions;
+    orchestrator = nextOrchestrator;
   } catch (error) {
     nextDatabase.close();
     throw error;
@@ -352,43 +361,43 @@ function registerIpcHandlers(): void {
     return worktreeManager.remove(request);
   });
   ipcMain.handle(IPC.orchestrationsList, (_event, repoRoot: unknown) => {
-    if (!rehan) throw new Error('The orchestrator is not ready.');
+    if (!orchestrator) throw new Error('The orchestrator is not ready.');
     if (repoRoot !== undefined && typeof repoRoot !== 'string') throw new Error('Invalid repository path.');
-    return rehan.list(repoRoot as string | undefined);
+    return orchestrator.list(repoRoot as string | undefined);
   });
   ipcMain.handle(IPC.orchestrationCreate, (_event, request: OrchestrationCreateRequest) => {
-    if (!rehan) throw new Error('The orchestrator is not ready.');
-    return rehan.create(request);
+    if (!orchestrator) throw new Error('The orchestrator is not ready.');
+    return orchestrator.create(request);
   });
   ipcMain.handle(IPC.orchestrationStop, (_event, runId: unknown) => {
-    if (!rehan || typeof runId !== 'string') return { ok: false, error: 'Invalid orchestrator run.' };
-    return rehan.stop(runId);
+    if (!orchestrator || typeof runId !== 'string') return { ok: false, error: 'Invalid orchestrator run.' };
+    return orchestrator.stop(runId);
   });
   ipcMain.handle(IPC.orchestrationTaskRetry, (_event, request: OrchestrationTaskRequest) => {
-    if (!rehan || !request || typeof request.taskId !== 'string') {
+    if (!orchestrator || !request || typeof request.taskId !== 'string') {
       return { ok: false, error: 'Invalid orchestrator task.' };
     }
-    return rehan.retry(request);
+    return orchestrator.retry(request);
   });
   ipcMain.handle(IPC.orchestrationTaskDiff, (_event, request: OrchestrationTaskRequest) => {
-    if (!rehan || !request || typeof request.taskId !== 'string') throw new Error('Invalid task diff request.');
-    return rehan.diff(request);
+    if (!orchestrator || !request || typeof request.taskId !== 'string') throw new Error('Invalid task diff request.');
+    return orchestrator.diff(request);
   });
   ipcMain.handle(IPC.orchestrationTaskReview, (_event, request: OrchestrationReviewRequest) => {
-    if (!rehan || !request || typeof request.taskId !== 'string') throw new Error('Invalid task review request.');
-    return rehan.review(request);
+    if (!orchestrator || !request || typeof request.taskId !== 'string') throw new Error('Invalid task review request.');
+    return orchestrator.review(request);
   });
   ipcMain.handle(IPC.orchestrationIntegrate, (_event, request: OrchestrationRunRequest) => {
-    if (!rehan || !request || typeof request.runId !== 'string') throw new Error('Invalid integration request.');
-    return rehan.integrate(request);
+    if (!orchestrator || !request || typeof request.runId !== 'string') throw new Error('Invalid integration request.');
+    return orchestrator.integrate(request);
   });
   ipcMain.handle(IPC.orchestrationVerify, (_event, request: OrchestrationVerifyRequest) => {
-    if (!rehan || !request || typeof request.runId !== 'string') throw new Error('Invalid verification request.');
-    return rehan.verify(request);
+    if (!orchestrator || !request || typeof request.runId !== 'string') throw new Error('Invalid verification request.');
+    return orchestrator.verify(request);
   });
   ipcMain.handle(IPC.orchestrationCleanup, (_event, request: OrchestrationRunRequest) => {
-    if (!rehan || !request || typeof request.runId !== 'string') throw new Error('Invalid cleanup request.');
-    return rehan.cleanup(request);
+    if (!orchestrator || !request || typeof request.runId !== 'string') throw new Error('Invalid cleanup request.');
+    return orchestrator.cleanup(request);
   });
   ipcMain.handle(IPC.activityList, (_event, request: ActivityListRequest | undefined) => {
     if (!database) throw new Error('Finish setup first.');
@@ -421,6 +430,26 @@ function registerIpcHandlers(): void {
     } catch (error) {
       return { ok: false, recoveredItems: 0, missingWorktrees: 0, error: errorMessage(error) };
     }
+  });
+  ipcMain.handle(IPC.agentProfileSave, (_event, request: AgentProfileSaveRequest) => {
+    if (!extensions) throw new Error('Finish setup first.');
+    return extensions.saveProfile(request);
+  });
+  ipcMain.handle(IPC.agentProfileDelete, (_event, request: ExtensionDeleteRequest) => {
+    if (!extensions || !request || typeof request.id !== 'string') {
+      return { ok: false, error: 'Invalid agent profile.' };
+    }
+    return extensions.deleteProfile(request.id);
+  });
+  ipcMain.handle(IPC.orchestrationTemplateSave, (_event, request: OrchestrationTemplateSaveRequest) => {
+    if (!extensions) throw new Error('Finish setup first.');
+    return extensions.saveTemplate(request);
+  });
+  ipcMain.handle(IPC.orchestrationTemplateDelete, (_event, request: ExtensionDeleteRequest) => {
+    if (!extensions || !request || typeof request.id !== 'string') {
+      return { ok: false, error: 'Invalid template.' };
+    }
+    return extensions.deleteTemplate(request.id);
   });
   ipcMain.handle(IPC.terminalsList, () => ptyManager?.list() ?? []);
   ipcMain.handle(IPC.terminalSpawn, async (_event, request: TerminalSpawnRequest) => {
@@ -481,11 +510,11 @@ app.whenReady().then(() => {
   ptyManager = new PtyManager({
     logger,
     onData: (event) => {
-      rehan?.handleTerminalData(event);
+      orchestrator?.handleTerminalData(event);
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.terminalData, event);
     },
     onExit: (event) => {
-      rehan?.handleTerminalExit(event);
+      orchestrator?.handleTerminalExit(event);
       database?.appendEvent('terminal.finished', {
         terminalId: event.id,
         exitCode: event.exitCode,
@@ -531,9 +560,10 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   ptyManager?.stopAll();
   ptyManager = null;
-  rehan = null;
+  orchestrator = null;
   hive = null;
   worktreeManager = null;
+  extensions = null;
   database?.appendEvent('app.stopping', {});
   database?.close();
   database = null;

@@ -25,7 +25,7 @@ describe('RelayDatabase', () => {
 
     expect(database.health()).toMatchObject({
       open: true,
-      schemaVersion: 5
+      schemaVersion: 6
     });
 
     database.close();
@@ -97,7 +97,42 @@ describe('RelayDatabase', () => {
     database.close();
   });
 
-  it('persists Rehan runs and tasks', () => {
+  it('persists reusable agent profiles and orchestration templates', () => {
+    const database = temporaryDatabase();
+    database.open();
+    database.upsertAgentProfile({
+      id: 'profile-frontend',
+      name: 'Avery',
+      provider: 'claude',
+      model: 'claude-sonnet-4-5',
+      instructions: 'Own the renderer.',
+      avatarSeed: 'avery',
+      enabled: true,
+      createdAt: 100,
+      updatedAt: 100
+    });
+    database.upsertOrchestrationTemplate({
+      id: 'template-feature',
+      name: 'Feature team',
+      objective: 'Build and verify the feature.',
+      strategy: 'balanced',
+      profileIds: ['profile-frontend'],
+      concurrency: 1,
+      createdAt: 100,
+      updatedAt: 100
+    });
+
+    expect(database.listAgentProfiles()).toMatchObject([{ name: 'Avery', enabled: true }]);
+    expect(database.getOrchestrationTemplate('template-feature')).toMatchObject({
+      name: 'Feature team',
+      profileIds: ['profile-frontend']
+    });
+    expect(database.deleteOrchestrationTemplate('template-feature')).toBe(true);
+    expect(database.deleteAgentProfile('profile-frontend')).toBe(true);
+    database.close();
+  });
+
+  it('persists orchestrator runs and tasks', () => {
     const database = temporaryDatabase();
     database.open();
     database.createOrchestration({

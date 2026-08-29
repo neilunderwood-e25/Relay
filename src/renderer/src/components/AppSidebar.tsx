@@ -3,6 +3,7 @@ import {
   DashboardSquare01Icon,
   FolderGitIcon,
   GitBranchIcon,
+  Layers01Icon,
   Robot01Icon,
   Settings01Icon
 } from '@hugeicons/core-free-icons';
@@ -11,7 +12,7 @@ import { Icon } from './ui/Icon';
 import { Separator } from './ui/Separator';
 import { Tooltip } from './ui/app-tooltip';
 
-export type AppView = 'rehan' | 'console' | 'worktrees' | 'activity' | 'settings';
+export type AppView = 'orchestrator' | 'console' | 'worktrees' | 'library' | 'activity' | 'settings';
 
 export function AppSidebar({ activeView, orchestratorName, onNavigate, onChooseDirectory }: {
   activeView: AppView;
@@ -34,9 +35,9 @@ export function AppSidebar({ activeView, orchestratorName, onNavigate, onChooseD
           <Button
             variant="ghost"
             size="icon"
-            className={`sidebar-nav-button ${activeView === 'rehan' ? 'active' : ''}`}
+            className={`sidebar-nav-button ${activeView === 'orchestrator' ? 'active' : ''}`}
             aria-label={orchestratorName}
-            onClick={() => onNavigate('rehan')}
+            onClick={() => onNavigate('orchestrator')}
           >
             <Icon icon={Robot01Icon} />
           </Button>
@@ -72,6 +73,17 @@ export function AppSidebar({ activeView, orchestratorName, onNavigate, onChooseD
             onClick={() => onNavigate('activity')}
           >
             <Icon icon={Activity01Icon} />
+          </Button>
+        </Tooltip>
+        <Tooltip content="Agent library" side="right">
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`sidebar-nav-button ${activeView === 'library' ? 'active' : ''}`}
+            aria-label="Agent library"
+            onClick={() => onNavigate('library')}
+          >
+            <Icon icon={Layers01Icon} />
           </Button>
         </Tooltip>
       </nav>

@@ -12,7 +12,7 @@ import type {
   WorktreeSnapshot
 } from '../src/shared/contracts';
 import { RelayDatabase } from '../src/main/database';
-import { planObjective, RehanOrchestrator } from '../src/main/orchestrator';
+import { planObjective, Orchestrator } from '../src/main/orchestrator';
 
 const temporaryDirectories: string[] = [];
 
@@ -119,7 +119,7 @@ function fixture(): {
   database: RelayDatabase;
   worktrees: FakeWorktrees;
   terminals: FakeTerminals;
-  orchestrator: RehanOrchestrator;
+  orchestrator: Orchestrator;
 } {
   const root = mkdtempSync(join(tmpdir(), 'relay-orchestrator-test-'));
   temporaryDirectories.push(root);
@@ -127,7 +127,7 @@ function fixture(): {
   database.open();
   const worktrees = new FakeWorktrees();
   const terminals = new FakeTerminals();
-  const orchestrator = new RehanOrchestrator({
+  const orchestrator = new Orchestrator({
     database,
     logger: pino({ enabled: false }),
     worktrees,
@@ -137,7 +137,7 @@ function fixture(): {
   return { database, worktrees, terminals, orchestrator };
 }
 
-describe('RehanOrchestrator', () => {
+describe('Orchestrator', () => {
   it('decomposes one objective across Claude and Codex', () => {
     expect(planObjective('Build authentication', ['claude', 'codex'])).toMatchObject([
       { provider: 'claude', role: 'builder', deliverable: 'Working implementation' },
@@ -181,6 +181,60 @@ describe('RehanOrchestrator', () => {
     orchestrator.handleTerminalExit({ id: second.id, exitCode: 0, exitedAt: Date.now() });
     await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
     expect(database.getOrchestration(created.run.id)?.tasks.every((task) => task.summary)).toBe(true);
+    database.close();
+  });
+
+  it('runs reusable profiles from a saved team template', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const now = Date.now();
+    database.upsertAgentProfile({
+      id: 'profile-avery',
+      name: 'Avery',
+      provider: 'claude',
+      model: 'claude-sonnet-4-5',
+      instructions: 'Own the frontend and accessibility.',
+      avatarSeed: 'avery',
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    });
+    database.upsertAgentProfile({
+      id: 'profile-morgan',
+      name: 'Morgan',
+      provider: 'claude',
+      model: null,
+      instructions: 'Own focused tests and review.',
+      avatarSeed: 'morgan',
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    });
+    database.upsertOrchestrationTemplate({
+      id: 'template-feature',
+      name: 'Feature team',
+      objective: 'Build a feature.',
+      strategy: 'parallel',
+      profileIds: ['profile-avery', 'profile-morgan'],
+      concurrency: 2,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Build the extension library.',
+      templateId: 'template-feature'
+    });
+    await eventually(() => terminals.spawned.length === 2);
+
+    expect(created.run).toMatchObject({ templateId: 'template-feature', strategy: 'parallel', concurrency: 2 });
+    expect(created.tasks).toMatchObject([
+      { profileId: 'profile-avery', agentName: 'Avery', provider: 'claude', model: 'claude-sonnet-4-5' },
+      { profileId: 'profile-morgan', agentName: 'Morgan', provider: 'claude' }
+    ]);
+    expect(terminals.spawned.map(({ snapshot }) => snapshot.name)).toEqual(['Avery', 'Morgan']);
+    expect(terminals.spawned[0].args).toContain('claude-sonnet-4-5');
+    expect(terminals.spawned[0].args?.at(-1)).toContain('Own the frontend and accessibility.');
     database.close();
   });
 

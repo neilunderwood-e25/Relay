@@ -40,7 +40,21 @@ describe('renderer design-system contract', () => {
     expect(sidebar).toContain('aria-label="Console"');
     expect(sidebar).toContain('aria-label="Worktrees"');
     expect(sidebar).toContain('aria-label="Activity"');
+    expect(sidebar).toContain('aria-label="Agent library"');
     expect(sidebar).toContain('aria-label="Settings"');
+  });
+
+  it('builds the extension library from shared Shadcn primitives', () => {
+    const library = read('src/renderer/src/components/LibraryWorkspace.tsx');
+    const orchestrator = read('src/renderer/src/components/OrchestratorWorkspace.tsx');
+
+    expect(library).toContain("from './ui/Card'");
+    expect(library).toContain("from './ui/Select'");
+    expect(library).toContain("from './ui/dialog'");
+    expect(library).toContain('window.relay.saveAgentProfile');
+    expect(library).toContain('window.relay.saveOrchestrationTemplate');
+    expect(orchestrator).toContain('profileIds: selectedProfileIds');
+    expect(orchestrator).toContain('templateId: selectedTemplateId');
   });
 
   it('ships the operations views on shared UI primitives', () => {

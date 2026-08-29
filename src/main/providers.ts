@@ -3,6 +3,7 @@ import { access, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { ProviderCapability, ProviderId } from '../shared/contracts';
+import { providerAdapters } from './providerAdapters';
 
 interface ProviderDefinition {
   id: ProviderId;
@@ -10,11 +11,6 @@ interface ProviderDefinition {
   command: string;
   versionArgs: string[];
 }
-
-const PROVIDERS: ProviderDefinition[] = [
-  { id: 'claude', label: 'Claude Code', command: 'claude', versionArgs: ['--version'] },
-  { id: 'codex', label: 'Codex CLI', command: 'codex', versionArgs: ['--version'] }
-];
 
 const COMMAND_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -95,7 +91,7 @@ export async function detectProvider(
 }
 
 export async function detectProviders(): Promise<ProviderCapability[]> {
-  return Promise.all(PROVIDERS.map((provider) => detectProvider(provider)));
+  return Promise.all(providerAdapters().map((provider) => detectProvider(provider)));
 }
 
 function readVersion(

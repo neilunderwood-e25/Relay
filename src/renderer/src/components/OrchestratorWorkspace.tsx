@@ -25,9 +25,11 @@ import {
   WorkflowIcon
 } from '@hugeicons/core-free-icons';
 import {
+  type AgentProfile,
   type OrchestrationSnapshot,
   type OrchestrationStrategy,
   type OrchestrationTask,
+  type OrchestrationTemplate,
   type ProviderCapability,
   type ProviderId,
   type RelayPreferences,
@@ -35,7 +37,7 @@ import {
   type TaskDiffSnapshot
 } from '../../../shared/contracts';
 import { personNameForSeed } from '../../../shared/agentIdentity';
-import { planObjective } from '../../../shared/orchestration';
+import { planObjective, planObjectiveForAgents } from '../../../shared/orchestration';
 import { AgentAvatar } from './AgentAvatar';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
@@ -47,6 +49,7 @@ import { Tooltip } from './ui/app-tooltip';
 import { RichTextEditor } from './RichTextEditor';
 import { OrchestratorTerminal } from './OrchestratorTerminal';
 import { Tabs, TabsList, TabsTrigger } from './ui/Tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/Select';
 import {
   Dialog,
   DialogContent,
@@ -82,13 +85,15 @@ const STRATEGIES: Array<{
   }
 ];
 
-export function RehanWorkspace({
+export function OrchestratorWorkspace({
   cwd,
   providers,
   orchestratorName,
   orchestratorProvider,
   orchestratorModel,
   preferences,
+  profiles,
+  templates,
   onRenameOrchestrator,
   onChooseDirectory,
   onOpenTerminal
@@ -99,6 +104,8 @@ export function RehanWorkspace({
   orchestratorProvider: ProviderId;
   orchestratorModel: string | null;
   preferences: RelayPreferences;
+  profiles: AgentProfile[];
+  templates: OrchestrationTemplate[];
   onRenameOrchestrator: (name: string) => Promise<boolean>;
   onChooseDirectory: () => void;
   onOpenTerminal: (terminalId: string) => void;
@@ -108,6 +115,8 @@ export function RehanWorkspace({
   const [objective, setObjective] = useState('');
   const [strategy, setStrategy] = useState<OrchestrationStrategy>(preferences.defaultStrategy);
   const [selectedProviders, setSelectedProviders] = useState<ProviderId[]>([]);
+  const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('__none__');
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -127,13 +136,27 @@ export function RehanWorkspace({
     () => providers.filter((provider) => provider.available).map((provider) => provider.id),
     [providers]
   );
+  const availableProfiles = useMemo(
+    () => profiles.filter((profile) => profile.enabled && availableProviders.includes(profile.provider)),
+    [profiles, availableProviders]
+  );
 
   useEffect(() => {
     setSelectedProviders((current) => {
       const valid = current.filter((provider) => availableProviders.includes(provider));
-      return valid.length > 0 ? valid : availableProviders;
+      return valid.length > 0 || selectedProfileIds.length > 0 ? valid : availableProviders;
     });
-  }, [availableProviders.join('|')]);
+  }, [availableProviders.join('|'), selectedProfileIds.length]);
+
+  useEffect(() => {
+    setSelectedProfileIds((current) => current.filter((id) => availableProfiles.some((profile) => profile.id === id)));
+  }, [availableProfiles]);
+
+  useEffect(() => {
+    if (selectedTemplateId !== '__none__' && !templates.some(({ id }) => id === selectedTemplateId)) {
+      setSelectedTemplateId('__none__');
+    }
+  }, [selectedTemplateId, templates]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -165,22 +188,68 @@ export function RehanWorkspace({
     });
   }), [repository?.mainRoot]);
 
-  const preview = useMemo(
-    () => objective.trim() ? planObjective(objective.trim(), selectedProviders, strategy) : [],
-    [objective, selectedProviders, strategy]
-  );
+  const selectedProfiles = availableProfiles.filter((profile) => selectedProfileIds.includes(profile.id));
+  const workerCount = selectedProfiles.length > 0 ? selectedProfiles.length : selectedProviders.length;
+  const preview = useMemo(() => {
+    if (!objective.trim()) return [];
+    return selectedProfiles.length > 0
+      ? planObjectiveForAgents(objective.trim(), selectedProfiles.map((profile) => ({
+          provider: profile.provider,
+          profileId: profile.id,
+          name: profile.name,
+          avatarSeed: profile.avatarSeed,
+          model: profile.model,
+          instructions: profile.instructions
+        })), strategy)
+      : planObjective(objective.trim(), selectedProviders, strategy);
+  }, [objective, selectedProfiles, selectedProviders, strategy]);
   const selectedRun = runs.find(({ run }) => run.id === selectedRunId) ?? runs[0] ?? null;
   const activeCount = runs.filter(({ run }) => ['queued', 'running', 'stopping'].includes(run.status)).length;
 
   const toggleProvider = (provider: ProviderId): void => {
     if (!availableProviders.includes(provider)) return;
+    setSelectedTemplateId('__none__');
+    setSelectedProfileIds([]);
     setSelectedProviders((current) => current.includes(provider)
       ? current.length === 1 ? current : current.filter((candidate) => candidate !== provider)
       : [...current, provider]);
   };
 
+  const toggleProfile = (profileId: string): void => {
+    setSelectedTemplateId('__none__');
+    setSelectedProviders([]);
+    setSelectedProfileIds((current) => current.includes(profileId)
+      ? current.filter((id) => id !== profileId)
+      : [...current, profileId].slice(0, 4));
+  };
+
+  const applyTemplate = (templateId: string): void => {
+    setSelectedTemplateId(templateId);
+    const template = templates.find(({ id }) => id === templateId);
+    if (!template) return;
+    setObjective(template.objective);
+    setStrategy(template.strategy);
+    const profileIds = template.profileIds.filter((id) => availableProfiles.some((profile) => profile.id === id));
+    if (profileIds.length > 0) {
+      setSelectedProfilesOnly(profileIds);
+    } else {
+      setSelectedProfileIds([]);
+      setSelectedProviders(availableProviders);
+    }
+  };
+
+  const chooseStrategy = (next: OrchestrationStrategy): void => {
+    setSelectedTemplateId('__none__');
+    setStrategy(next);
+  };
+
+  const setSelectedProfilesOnly = (profileIds: string[]): void => {
+    setSelectedProviders([]);
+    setSelectedProfileIds(profileIds.slice(0, 4));
+  };
+
   const start = async (): Promise<void> => {
-    if (!objective.trim() || selectedProviders.length === 0) return;
+    if (!objective.trim() || workerCount === 0) return;
     setBusy(true);
     setError(null);
     try {
@@ -189,11 +258,17 @@ export function RehanWorkspace({
         objective: objective.trim(),
         strategy,
         providers: selectedProviders,
-        concurrency: Math.min(preferences.maxConcurrentAgents, selectedProviders.length)
+        profileIds: selectedProfileIds,
+        templateId: selectedTemplateId === '__none__' ? undefined : selectedTemplateId,
+        concurrency: Math.min(
+          templates.find(({ id }) => id === selectedTemplateId)?.concurrency ?? preferences.maxConcurrentAgents,
+          workerCount
+        )
       });
       setRuns((current) => [created, ...current.filter((run) => run.run.id !== created.run.id)]);
       setSelectedRunId(created.run.id);
       setObjective('');
+      setSelectedTemplateId('__none__');
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -231,7 +306,7 @@ export function RehanWorkspace({
   }, []);
 
   return (
-    <section className="rehan-workspace">
+    <section className="orchestrator-workspace">
       <header className="dashboard-header">
         <div className="dashboard-title">
           <AgentAvatar seed="relay-orchestrator" name={orchestratorName} className="orchestrator-heading-avatar" />
@@ -306,17 +381,17 @@ export function RehanWorkspace({
       ) : !loading && !repository?.isRepository ? (
         <Card className="worktree-empty-card">
           <CardContent className="worktree-empty-content">
-            <span className="rehan-command-icon"><Icon icon={Robot01Icon} size={24} /></span>
+            <span className="orchestrator-command-icon"><Icon icon={Robot01Icon} size={24} /></span>
             <strong>Git repository required</strong>
             <Button size="sm" variant="secondary" onClick={onChooseDirectory}>Choose project</Button>
           </CardContent>
         </Card>
       ) : (
-        <div className="rehan-command-center">
-          <div className="rehan-main-column">
-            <Card className="rehan-command-card">
-              <CardContent className="rehan-command-content">
-                <div className="rehan-objective-row">
+        <div className="orchestrator-command-center">
+          <div className="orchestrator-main-column">
+            <Card className="orchestrator-command-card">
+              <CardContent className="orchestrator-command-content">
+                <div className="orchestrator-objective-row">
                   <RichTextEditor
                     value={objective}
                     disabled={busy || loading}
@@ -325,9 +400,20 @@ export function RehanWorkspace({
                   />
                 </div>
 
-                <div className="rehan-command-options">
-                  <div className="rehan-command-settings">
-                    <div className="rehan-strategy-switch" aria-label="Run mode">
+                <div className="orchestrator-command-options">
+                  <div className="orchestrator-command-settings">
+                    {templates.length > 0 && (
+                      <Select value={selectedTemplateId} onValueChange={(value) => applyTemplate(value ?? '__none__')}>
+                        <SelectTrigger size="sm" className="orchestrator-template-select" aria-label="Run template">
+                          <SelectValue>{templates.find(({ id }) => id === selectedTemplateId)?.name ?? 'Template'}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent align="start">
+                          <SelectItem value="__none__">No template</SelectItem>
+                          {templates.map((template) => <SelectItem key={template.id} value={template.id}>{template.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    )}
+                    <div className="orchestrator-strategy-switch" aria-label="Run mode">
                       {STRATEGIES.map((option) => (
                         <Tooltip key={option.id} content={option.tooltip}>
                           <Button
@@ -336,14 +422,14 @@ export function RehanWorkspace({
                             variant={strategy === option.id ? 'secondary' : 'ghost'}
                             className={strategy === option.id ? 'selected' : ''}
                             aria-pressed={strategy === option.id}
-                            onClick={() => setStrategy(option.id)}
+                            onClick={() => chooseStrategy(option.id)}
                           >
                             <Icon icon={option.icon} size={13} /> {option.label}
                           </Button>
                         </Tooltip>
                       ))}
                     </div>
-                    <div className="rehan-provider-switch" aria-label="Workers">
+                    <div className="orchestrator-provider-switch" aria-label="Workers">
                       {providers.map((provider) => {
                         const selected = selectedProviders.includes(provider.id);
                         return (
@@ -364,13 +450,33 @@ export function RehanWorkspace({
                         );
                       })}
                     </div>
+                    {availableProfiles.length > 0 && (
+                      <div className="orchestrator-profile-switch" aria-label="Agent profiles">
+                        {availableProfiles.map((profile) => {
+                          const selected = selectedProfileIds.includes(profile.id);
+                          return (
+                            <Tooltip key={profile.id} content={profile.name.split(/\s+/).slice(0, 2).join(' ')}>
+                              <button
+                                type="button"
+                                className={`profile-toggle ${selected ? 'selected' : ''}`}
+                                aria-label={profile.name}
+                                aria-pressed={selected}
+                                onClick={() => toggleProfile(profile.id)}
+                              >
+                                <AgentAvatar seed={profile.avatarSeed} name={profile.name} />
+                              </button>
+                            </Tooltip>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                   <Tooltip content="Start run">
                     <span className="disabled-tooltip-target">
                       <Button
-                        className="rehan-run-button"
+                        className="orchestrator-run-button"
                         aria-label="Start run"
-                        disabled={!objective.trim() || busy || loading || selectedProviders.length === 0}
+                        disabled={!objective.trim() || busy || loading || workerCount === 0}
                         onClick={() => void start()}
                       >
                         <Icon icon={PlayIcon} size={14} /> Run
@@ -380,13 +486,16 @@ export function RehanWorkspace({
                 </div>
 
                 {preview.length > 0 && (
-                  <div className="rehan-plan-preview" aria-label="Task plan">
+                  <div className="orchestrator-plan-preview" aria-label="Task plan">
                     {preview.map((task) => (
-                      <div key={`${task.provider}-${task.title}`} className="rehan-plan-item">
-                        <span className={`rehan-task-provider ${task.provider}`}>
+                      <div key={`${task.profileId ?? task.provider}-${task.title}`} className="orchestrator-plan-item">
+                        {task.avatarSeed && task.agentName && (
+                          <AgentAvatar seed={task.avatarSeed} name={task.agentName} className="plan-agent-avatar" />
+                        )}
+                        <span className={`orchestrator-task-provider ${task.provider}`}>
                           <Icon icon={task.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={12} />
                         </span>
-                        <div><span>{roleLabel(task.role)}</span><strong>{task.title}</strong></div>
+                        <div><span>{task.agentName ?? roleLabel(task.role)}</span><strong>{task.title}</strong></div>
                       </div>
                     ))}
                   </div>
@@ -405,19 +514,19 @@ export function RehanWorkspace({
                 verificationProvider={preferences.verificationProvider}
               />
             ) : (
-              <Card className="rehan-ready-card">
+              <Card className="orchestrator-ready-card">
                 <CardContent><span className="online-dot" />Ready for work</CardContent>
               </Card>
             )}
           </div>
 
-          <aside className="rehan-history" aria-label="Run history">
-            <div className="rehan-history-title"><span>Runs</span><Badge variant="secondary">{runs.length}</Badge></div>
-            <div className="rehan-history-list">
+          <aside className="orchestrator-history" aria-label="Run history">
+            <div className="orchestrator-history-title"><span>Runs</span><Badge variant="secondary">{runs.length}</Badge></div>
+            <div className="orchestrator-history-list">
               {runs.map((snapshot) => (
                 <button
                   key={snapshot.run.id}
-                  className={`rehan-history-row ${selectedRun?.run.id === snapshot.run.id ? 'selected' : ''}`}
+                  className={`orchestrator-history-row ${selectedRun?.run.id === snapshot.run.id ? 'selected' : ''}`}
                   onClick={() => setSelectedRunId(snapshot.run.id)}
                 >
                   <span className={`history-state ${snapshot.run.status}`} />
@@ -425,7 +534,7 @@ export function RehanWorkspace({
                   <small>{strategyLabel(snapshot.run.strategy)}</small>
                 </button>
               ))}
-              {runs.length === 0 && <span className="rehan-history-empty">No runs</span>}
+              {runs.length === 0 && <span className="orchestrator-history-empty">No runs</span>}
             </div>
           </aside>
         </div>
@@ -509,13 +618,13 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal, onSnapshot, on
 
   return (
     <>
-    <Card className="rehan-mission-card">
-      <CardHeader className="rehan-mission-header">
-        <div className="rehan-mission-heading">
-          <span className="rehan-run-mark"><Icon icon={Task01Icon} size={15} /></span>
+    <Card className="orchestrator-mission-card">
+      <CardHeader className="orchestrator-mission-header">
+        <div className="orchestrator-mission-heading">
+          <span className="orchestrator-run-mark"><Icon icon={Task01Icon} size={15} /></span>
           <div><span>{strategyLabel(run.strategy)}</span><strong title={run.objective}>{run.objective}</strong></div>
         </div>
-        <div className="rehan-run-meta">
+        <div className="orchestrator-run-meta">
           <StatusBadge status={run.status} />
           {active && (
             <Tooltip content="Stop run">
@@ -526,7 +635,7 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal, onSnapshot, on
           )}
         </div>
       </CardHeader>
-      <div className="rehan-progress"><span style={{ width: `${progress}%` }} /></div>
+      <div className="orchestrator-progress"><span style={{ width: `${progress}%` }} /></div>
       {run.status === 'completed' && (
         <div className="integration-bar">
           <div className="integration-progress-copy">
@@ -574,7 +683,7 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal, onSnapshot, on
           </div>
         </div>
       )}
-      <CardContent className="rehan-mission-content">
+      <CardContent className="orchestrator-mission-content">
         {run.integrationError && (
           <Alert variant="destructive" className="integration-alert">
             <Icon icon={Alert02Icon} size={14} /><AlertDescription>{run.integrationError}</AlertDescription>
@@ -586,21 +695,21 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal, onSnapshot, on
             <pre>{run.verificationError ?? run.verificationSummary}</pre>
           </div>
         )}
-        <div className="rehan-task-board">
+        <div className="orchestrator-task-board">
           {tasks.map((task) => (
             <button
               key={task.id}
-              className={`rehan-task-card ${selectedTask?.id === task.id ? 'selected' : ''}`}
+              className={`orchestrator-task-card ${selectedTask?.id === task.id ? 'selected' : ''}`}
               onClick={() => setSelectedTaskId(task.id)}
             >
-              <AgentAvatar seed={task.id} name={personNameForSeed(task.id)} className="task-agent-avatar" />
-              <span className={`rehan-task-provider ${task.provider}`}>
+              <AgentAvatar seed={task.avatarSeed ?? task.id} name={task.agentName ?? personNameForSeed(task.id)} className="task-agent-avatar" />
+              <span className={`orchestrator-task-provider ${task.provider}`}>
                 <Icon icon={task.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={13} />
               </span>
-              <span className="rehan-task-card-copy">
+              <span className="orchestrator-task-card-copy">
                 <small>{roleLabel(task.role)}</small>
                 <strong>{task.title}</strong>
-                <span>{personNameForSeed(task.id)} · {task.deliverable}</span>
+                <span>{task.agentName ?? personNameForSeed(task.id)} · {task.deliverable}</span>
               </span>
               <span className={`task-state ${task.status}`} />
               {(task.reviewStatus ?? 'pending') !== 'pending' && (
@@ -668,9 +777,9 @@ function TaskDetail({ task, onRetry, onOpenTerminal, onReview }: {
 }): React.JSX.Element {
   const retryable = ['blocked', 'failed', 'stopped'].includes(task.status);
   return (
-    <div className="rehan-task-detail">
-      <div className="rehan-detail-main">
-        <div className="rehan-detail-title">
+    <div className="orchestrator-task-detail">
+      <div className="orchestrator-detail-main">
+        <div className="orchestrator-detail-title">
           <strong>{task.title}</strong>
           {task.branch && <span><Icon icon={GitBranchIcon} size={11} />{task.branch.replace(/^(?:relay|foundry)\//, '')}</span>}
         </div>
@@ -681,7 +790,7 @@ function TaskDetail({ task, onRetry, onOpenTerminal, onReview }: {
           </pre>
         )}
       </div>
-      <div className="rehan-detail-actions">
+      <div className="orchestrator-detail-actions">
         <StatusBadge status={task.status} />
         {task.status === 'completed' && task.worktreeId && !['integrated', 'no_changes'].includes(task.integrationStatus ?? 'pending') && (
           <Tooltip content="Review diff">

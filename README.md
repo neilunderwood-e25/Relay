@@ -2,7 +2,7 @@
 
 Relay is a local-first desktop multi-agent coding harness. Michael is the default orchestrator; Claude Code and Codex CLI workers operate in isolated Git worktrees on one coding project. The orchestrator name can be changed in the app.
 
-The current implementation includes **Milestone 01: technical foundation**, **Milestone 02: terminal plane**, **Milestone 03: Git worktree plane**, **Milestone 04: orchestration core**, **Milestone 05: integration plane**, and **Milestone 06: operations plane**. Michael accepts one objective, decomposes it across available CLI workers, provisions isolated worktrees, runs Claude Code and Codex non-interactively, and persists the complete lifecycle through review, integration, verification, cleanup, activity history, and recovery.
+The current implementation includes Milestones 01–08, from the technical foundation through the extensibility plane. Michael accepts one objective, decomposes it across available CLI workers, provisions isolated worktrees, runs Claude Code and Codex non-interactively, and persists the complete lifecycle through review, integration, verification, cleanup, activity history, recovery, reusable agent profiles, and saved team templates.
 
 ## Development
 
@@ -40,8 +40,9 @@ The macOS bundle uses `build/relay-app-icon.icns`, while development mode uses
 
 ```text
 Electron main process
-  ├── provider discovery
+  ├── provider adapter registry + discovery
   ├── SQLite persistence
+  ├── agent profile + team template registry
   ├── persistent orchestrator hive workspace
   ├── Git repository + worktree manager
   ├── orchestrator planner + concurrent scheduler
@@ -56,6 +57,7 @@ isolated preload contextBridge
           ▼
 React renderer
   ├── orchestrator command + live task board
+  ├── reusable agent + template library
   ├── xterm.js terminal workspace
   ├── worktree creation + status screen
   ├── activity ledger + runtime health
@@ -145,3 +147,12 @@ Michael's identity is refreshed by the harness while `memory.md` is never overwr
 - Run mode, agent concurrency, and preferred verifier defaults persist inside the selected Harness Home.
 - Runtime health reports active terminals, running orchestrations, managed worktrees, and event volume.
 - Recovery marks interrupted work as blocked, repairs hive projections, and reports missing worktrees without deleting branches or files.
+
+## Extensibility lifecycle
+
+- Claude Code and Codex are represented by one provider-adapter contract for discovery, worker launch, and read-only verification.
+- Reusable agent profiles store a person name, animated DiceBear avatar seed, CLI provider, optional model, instructions, and enabled state.
+- Multiple profiles may use the same CLI, allowing specialized workers to run concurrently in separate worktrees.
+- Team templates save an objective, run mode, concurrency, and up to four agent profiles.
+- The orchestrator command surface can load a template or select individual saved agents before a run.
+- Custom data never becomes an executable command: provider commands remain fixed and model identifiers are passed as bounded argument values without a shell.

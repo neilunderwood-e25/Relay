@@ -10,6 +10,20 @@ export interface PlannedTask {
   deliverable: string;
   instructions: string;
   provider: ProviderId;
+  profileId?: string;
+  agentName?: string;
+  avatarSeed?: string;
+  model?: string;
+  profileInstructions?: string;
+}
+
+export interface AgentTarget {
+  provider: ProviderId;
+  profileId?: string;
+  name?: string;
+  avatarSeed?: string;
+  model?: string | null;
+  instructions?: string;
 }
 
 export function planObjective(
@@ -17,7 +31,19 @@ export function planObjective(
   providers: ProviderId[],
   strategy: OrchestrationStrategy = 'balanced'
 ): PlannedTask[] {
-  const workers = uniqueProviders(providers);
+  return planObjectiveForAgents(
+    objective,
+    uniqueProviders(providers).map((provider) => ({ provider })),
+    strategy
+  );
+}
+
+export function planObjectiveForAgents(
+  objective: string,
+  agents: AgentTarget[],
+  strategy: OrchestrationStrategy = 'balanced'
+): PlannedTask[] {
+  const workers = agents.filter((agent) => ['claude', 'codex'].includes(agent.provider)).slice(0, 4);
   if (workers.length === 0) return [];
 
   const pieces = objective
@@ -27,7 +53,7 @@ export function planObjective(
 
   if (workers.length === 1) {
     return [{
-      provider: workers[0],
+      ...targetFields(workers[0]),
       role: 'owner',
       title: shortTitle(objective, 'Own delivery'),
       deliverable: 'Working change',
@@ -36,8 +62,8 @@ export function planObjective(
   }
 
   if (strategy === 'audit') {
-    return workers.map((provider, index) => ({
-      provider,
+    return workers.map((agent, index) => ({
+      ...targetFields(agent),
       role: 'investigator',
       title: index === 0 ? 'Primary audit' : 'Second opinion',
       deliverable: index === 0 ? 'Findings and risks' : 'Independent findings',
@@ -46,11 +72,11 @@ export function planObjective(
   }
 
   if (strategy === 'parallel') {
-    return workers.map((provider, index) => {
+    return workers.map((agent, index) => {
       const hasExplicitSlice = pieces.length >= workers.length;
       const slice = hasExplicitSlice ? pieces[index] : objective;
       return {
-        provider,
+        ...targetFields(agent),
         role: 'specialist',
         title: hasExplicitSlice
           ? shortTitle(slice, `Workstream ${index + 1}`)
@@ -67,19 +93,33 @@ export function planObjective(
     });
   }
 
-  return workers.map((provider, index) => index === 0 ? {
-    provider,
+  return workers.map((agent, index) => index === 0 ? {
+    ...targetFields(agent),
     role: 'builder',
     title: shortTitle(objective, 'Build solution'),
     deliverable: 'Working implementation',
     instructions: `Implement the objective end to end and run proportionate checks: ${objective}`
   } : {
-    provider,
+    ...targetFields(agent),
     role: 'reviewer',
     title: 'Validate solution',
     deliverable: 'Tests and review',
     instructions: `Independently inspect the objective. Add focused tests or safeguards, identify integration risks, and fix issues within your workstream: ${objective}`
   });
+}
+
+function targetFields(agent: AgentTarget): Pick<
+  PlannedTask,
+  'provider' | 'profileId' | 'agentName' | 'avatarSeed' | 'model' | 'profileInstructions'
+> {
+  return {
+    provider: agent.provider,
+    profileId: agent.profileId,
+    agentName: agent.name,
+    avatarSeed: agent.avatarSeed,
+    model: agent.model ?? undefined,
+    profileInstructions: agent.instructions
+  };
 }
 
 function uniqueProviders(providers: ProviderId[]): ProviderId[] {

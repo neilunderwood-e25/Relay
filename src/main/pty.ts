@@ -15,12 +15,8 @@ import type {
 } from '../shared/contracts';
 import { personNameForSeed } from '../shared/agentIdentity';
 import { resolveExecutable } from './providers';
+import { providerAdapter } from './providerAdapters';
 import { TerminalBuffer } from './terminalBuffer';
-
-const PROVIDER_COMMANDS: Record<ProviderId, string> = {
-  claude: 'claude',
-  codex: 'codex'
-};
 
 const MAX_LIVE_TERMINALS = 12;
 const MIN_COLS = 20;
@@ -72,7 +68,7 @@ export class PtyManager {
     const cwdInfo = await stat(cwd).catch(() => null);
     if (!cwdInfo?.isDirectory()) throw new Error(`Working directory does not exist: ${cwd}`);
 
-    const command = PROVIDER_COMMANDS[request.provider];
+    const command = providerAdapter(request.provider).command;
     const executable = await resolveExecutable(command);
     if (!executable) throw new Error(`${command} is not installed or is not available on PATH.`);
 

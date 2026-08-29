@@ -46,6 +46,52 @@ export interface RelayPreferences {
   verificationProvider: ProviderId | null;
 }
 
+export interface AgentProfile {
+  id: string;
+  name: string;
+  provider: ProviderId;
+  model: string | null;
+  instructions: string;
+  avatarSeed: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentProfileSaveRequest {
+  id?: string;
+  name: string;
+  provider: ProviderId;
+  model?: string | null;
+  instructions?: string;
+  avatarSeed?: string;
+  enabled?: boolean;
+}
+
+export interface OrchestrationTemplate {
+  id: string;
+  name: string;
+  objective: string;
+  strategy: OrchestrationStrategy;
+  profileIds: string[];
+  concurrency: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface OrchestrationTemplateSaveRequest {
+  id?: string;
+  name: string;
+  objective: string;
+  strategy: OrchestrationStrategy;
+  profileIds?: string[];
+  concurrency?: number;
+}
+
+export interface ExtensionDeleteRequest {
+  id: string;
+}
+
 export const DEFAULT_RELAY_PREFERENCES: RelayPreferences = {
   defaultStrategy: 'balanced',
   maxConcurrentAgents: 2,
@@ -62,6 +108,8 @@ export interface AppSnapshot {
   hive: HiveHealth;
   workspace: WorkspaceConfig;
   preferences: RelayPreferences;
+  agentProfiles: AgentProfile[];
+  orchestrationTemplates: OrchestrationTemplate[];
   providers: ProviderCapability[];
 }
 
@@ -272,6 +320,7 @@ export interface OrchestrationRun {
   verificationTerminalId?: string;
   verificationSummary?: string;
   verificationError?: string;
+  templateId?: string;
 }
 
 export interface OrchestrationTask {
@@ -301,6 +350,11 @@ export interface OrchestrationTask {
   integrationError?: string;
   reviewedAt?: number;
   integratedAt?: number;
+  profileId?: string;
+  agentName?: string;
+  avatarSeed?: string;
+  model?: string;
+  profileInstructions?: string;
 }
 
 export interface OrchestrationSnapshot {
@@ -315,6 +369,8 @@ export interface OrchestrationCreateRequest {
   baseBranch?: string;
   providers?: ProviderId[];
   concurrency?: number;
+  profileIds?: string[];
+  templateId?: string;
 }
 
 export interface OrchestrationTaskRequest {
@@ -384,6 +440,10 @@ export interface RelayApi {
   updatePreferences(request: PreferencesUpdateRequest): Promise<RelayPreferences>;
   getDiagnostics(): Promise<RuntimeDiagnostics>;
   recoverOperations(): Promise<RecoveryResult>;
+  saveAgentProfile(request: AgentProfileSaveRequest): Promise<AgentProfile>;
+  deleteAgentProfile(request: ExtensionDeleteRequest): Promise<OperationResult>;
+  saveOrchestrationTemplate(request: OrchestrationTemplateSaveRequest): Promise<OrchestrationTemplate>;
+  deleteOrchestrationTemplate(request: ExtensionDeleteRequest): Promise<OperationResult>;
   listTerminals(): Promise<TerminalSnapshot[]>;
   spawnTerminal(request: TerminalSpawnRequest): Promise<TerminalSnapshot>;
   getTerminalReplay(id: string): Promise<TerminalReplay>;

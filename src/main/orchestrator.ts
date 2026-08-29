@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import type {
+  AgentProfile,
   OperationResult,
   OrchestrationCreateRequest,
   OrchestrationReviewRequest,
@@ -23,8 +24,9 @@ import type {
 } from '../shared/contracts';
 import { DEFAULT_AGENT_NAMES, DEFAULT_ORCHESTRATOR_NAME } from '../shared/contracts';
 import { personNameForSeed } from '../shared/agentIdentity';
-import { planObjective } from '../shared/orchestration';
+import { planObjective, planObjectiveForAgents } from '../shared/orchestration';
 import type { RelayDatabase } from './database';
+import { providerAdapter } from './providerAdapters';
 
 export { planObjective } from '../shared/orchestration';
 
@@ -65,7 +67,7 @@ interface TerminalService {
   replay(id: string): TerminalReplay;
 }
 
-export interface RehanOrchestratorOptions {
+export interface OrchestratorOptions {
   database: RelayDatabase;
   logger: Logger;
   worktrees: WorktreeService;
@@ -75,10 +77,10 @@ export interface RehanOrchestratorOptions {
   onUpdate?: (snapshot: OrchestrationSnapshot) => void;
 }
 
-export class RehanOrchestrator {
+export class Orchestrator {
   private readonly runTails = new Map<string, Promise<void>>();
 
-  constructor(private readonly options: RehanOrchestratorOptions) {}
+  constructor(private readonly options: OrchestratorOptions) {}
 
   recover(): number {
     const recovered = this.options.database.recoverInterruptedOrchestrations();
@@ -111,14 +113,31 @@ export class RehanOrchestrator {
 
     const capabilities = await this.options.detectProviders();
     const available = new Set(capabilities.filter((provider) => provider.available).map((provider) => provider.id));
+    const template = request.templateId
+      ? this.options.database.getOrchestrationTemplate(request.templateId)
+      : undefined;
+    if (request.templateId && !template) throw new Error('The orchestration template was not found.');
+    const profileIds = request.profileIds?.length ? request.profileIds : template?.profileIds ?? [];
+    const profiles = resolveProfiles(this.options.database, profileIds, available);
     const requested = request.providers?.length ? uniqueProviders(request.providers) : [...available];
-    const providers = requested.filter((provider) => available.has(provider));
+    const providers = profiles.length > 0
+      ? profiles.map((profile) => profile.provider)
+      : requested.filter((provider) => available.has(provider));
     if (providers.length === 0) throw new Error('No supported CLI workers are available.');
 
     const now = Date.now();
     const runId = `run-${randomUUID().slice(0, 12)}`;
-    const strategy = validStrategy(request.strategy) ? request.strategy : 'balanced';
-    const plans = planObjective(objective, providers, strategy);
+    const strategy = validStrategy(request.strategy) ? request.strategy : template?.strategy ?? 'balanced';
+    const plans = profiles.length > 0
+      ? planObjectiveForAgents(objective, profiles.map((profile) => ({
+          provider: profile.provider,
+          profileId: profile.id,
+          name: profile.name,
+          avatarSeed: profile.avatarSeed,
+          model: profile.model,
+          instructions: profile.instructions
+        })), strategy)
+      : planObjective(objective, providers, strategy);
     const run: OrchestrationRun = {
       id: runId,
       objective,
@@ -126,11 +145,12 @@ export class RehanOrchestrator {
       baseBranch,
       status: 'queued',
       strategy,
-      concurrency: clampConcurrency(request.concurrency, providers.length),
+      concurrency: clampConcurrency(request.concurrency ?? template?.concurrency, plans.length),
       createdAt: now,
       updatedAt: now,
       integrationStatus: 'pending',
-      verificationStatus: 'idle'
+      verificationStatus: 'idle',
+      templateId: template?.id
     };
     const tasks: OrchestrationTask[] = plans.map((plan, ordinal) => ({
       id: `task-${randomUUID().slice(0, 12)}`,
@@ -145,6 +165,11 @@ export class RehanOrchestrator {
       attempt: 0,
       reviewStatus: 'pending',
       integrationStatus: 'pending',
+      profileId: plan.profileId,
+      agentName: plan.agentName,
+      avatarSeed: plan.avatarSeed,
+      model: plan.model,
+      profileInstructions: plan.profileInstructions,
       createdAt: now,
       updatedAt: now
     }));
@@ -155,6 +180,8 @@ export class RehanOrchestrator {
       runId,
       repoRoot: run.repoRoot,
       providers,
+      profileIds: profiles.map((profile) => profile.id),
+      templateId: template?.id,
       strategy,
       taskCount: tasks.length
     });
@@ -394,7 +421,7 @@ export class RehanOrchestrator {
         cwd: snapshot.run.repoRoot,
         cols: 120,
         rows: 32,
-        args: verificationArgs(provider.id, prompt)
+        args: providerAdapter(provider.id).verificationArgs(prompt)
       });
       snapshot.run.verificationStatus = 'running';
       snapshot.run.verificationProvider = provider.id;
@@ -552,12 +579,12 @@ export class RehanOrchestrator {
       const prompt = workerPrompt(run, task, this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME);
       const terminal = await this.options.terminals.spawn({
         provider: task.provider,
-        avatarSeed: task.id,
+        avatarSeed: task.avatarSeed ?? task.id,
         cwd: task.worktreePath,
-        name: personNameForSeed(task.id),
+        name: task.agentName ?? personNameForSeed(task.id),
         cols: 120,
         rows: 32,
-        args: workerArgs(task.provider, prompt)
+        args: providerAdapter(task.provider).workerArgs(prompt, task.model)
       });
       task.terminalId = terminal.id;
       task.status = 'running';
@@ -655,23 +682,18 @@ export class RehanOrchestrator {
 
 function workerPrompt(run: OrchestrationRun, task: OrchestrationTask, orchestratorName: string): string {
   return [
-    `You are ${personNameForSeed(task.id)}, a Relay worker coordinated by ${orchestratorName}.`,
+    `You are ${task.agentName ?? personNameForSeed(task.id)}, a Relay worker coordinated by ${orchestratorName}.`,
     `Provider: ${DEFAULT_AGENT_NAMES[task.provider]}.`,
     `Objective: ${run.objective}`,
     `Role: ${task.role}`,
     `Your task: ${task.instructions}`,
     `Expected deliverable: ${task.deliverable}`,
+    task.profileInstructions ? `Agent profile: ${task.profileInstructions}` : '',
     `Branch: ${task.branch ?? '(preparing)'}`,
     'Work only inside the current worktree. Do not modify other checkouts or merge branches.',
     'Do not commit unless the objective explicitly asks for a commit.',
     'Inspect existing code first, implement the task, run proportionate checks, then give a concise final summary.'
-  ].join('\n\n').slice(0, 4_000);
-}
-
-function workerArgs(provider: ProviderId, prompt: string): string[] {
-  return provider === 'claude'
-    ? ['--print', '--permission-mode', 'acceptEdits', '--output-format', 'text', '--no-session-persistence', prompt]
-    : ['--ask-for-approval', 'never', 'exec', '--sandbox', 'workspace-write', '--color', 'always', '--ephemeral', prompt];
+  ].filter(Boolean).join('\n\n').slice(0, 4_000);
 }
 
 function verificationPrompt(run: OrchestrationRun, orchestratorName: string): string {
@@ -683,12 +705,6 @@ function verificationPrompt(run: OrchestrationRun, orchestratorName: string): st
     'This is read-only verification. Do not edit files, create commits, or change Git state.',
     'End with a concise verdict and list the checks you ran.'
   ].join('\n\n').slice(0, 4_000);
-}
-
-function verificationArgs(provider: ProviderId, prompt: string): string[] {
-  return provider === 'claude'
-    ? ['--print', '--permission-mode', 'plan', '--output-format', 'text', '--no-session-persistence', prompt]
-    : ['--ask-for-approval', 'never', 'exec', '--sandbox', 'read-only', '--color', 'always', '--ephemeral', prompt];
 }
 
 function worktreeName(runId: string, task: OrchestrationTask): string {
@@ -707,6 +723,22 @@ function validStrategy(value: unknown): value is OrchestrationStrategy {
 
 function uniqueProviders(providers: ProviderId[]): ProviderId[] {
   return [...new Set(providers.filter((provider): provider is ProviderId => ['claude', 'codex'].includes(provider)))];
+}
+
+function resolveProfiles(
+  database: RelayDatabase,
+  profileIds: string[],
+  available: Set<ProviderId>
+): AgentProfile[] {
+  const ids = [...new Set(profileIds)];
+  if (ids.length > MAX_CONCURRENCY) throw new Error('Choose up to four agent profiles.');
+  return ids.map((id) => {
+    const profile = database.getAgentProfile(id);
+    if (!profile) throw new Error('An agent profile was not found.');
+    if (!profile.enabled) throw new Error(`${profile.name} is disabled.`);
+    if (!available.has(profile.provider)) throw new Error(`${DEFAULT_AGENT_NAMES[profile.provider]} is unavailable.`);
+    return profile;
+  });
 }
 
 function summaryFromReplay(replay: TerminalReplay): string | undefined {
