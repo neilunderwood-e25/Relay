@@ -1,6 +1,8 @@
 node_modules/
 out/
 dist/
+build/icon-source/
+build/*.iconset/
 coverage/
 *.log
 .DS_Store

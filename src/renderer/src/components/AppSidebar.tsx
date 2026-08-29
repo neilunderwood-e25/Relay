@@ -9,9 +9,9 @@ import {
 import { Button } from './ui/Button';
 import { Icon } from './ui/Icon';
 import { Separator } from './ui/Separator';
-import { Tooltip } from './ui/Tooltip';
+import { Tooltip } from './ui/app-tooltip';
 
-export type AppView = 'rehan' | 'console' | 'worktrees';
+export type AppView = 'rehan' | 'console' | 'worktrees' | 'activity' | 'settings';
 
 export function AppSidebar({ activeView, orchestratorName, onNavigate, onChooseDirectory }: {
   activeView: AppView;
@@ -64,21 +64,29 @@ export function AppSidebar({ activeView, orchestratorName, onNavigate, onChooseD
           </Button>
         </Tooltip>
         <Tooltip content="Activity" side="right">
-          <span className="disabled-tooltip-target">
-            <Button variant="ghost" size="icon" className="sidebar-nav-button" disabled aria-label="Activity">
-              <Icon icon={Activity01Icon} />
-            </Button>
-          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`sidebar-nav-button ${activeView === 'activity' ? 'active' : ''}`}
+            aria-label="Activity"
+            onClick={() => onNavigate('activity')}
+          >
+            <Icon icon={Activity01Icon} />
+          </Button>
         </Tooltip>
       </nav>
 
       <div className="sidebar-footer">
         <Tooltip content="Settings" side="right">
-          <span className="disabled-tooltip-target">
-            <Button variant="ghost" size="icon" className="sidebar-nav-button" disabled aria-label="Settings">
-              <Icon icon={Settings01Icon} />
-            </Button>
-          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`sidebar-nav-button ${activeView === 'settings' ? 'active' : ''}`}
+            aria-label="Settings"
+            onClick={() => onNavigate('settings')}
+          >
+            <Icon icon={Settings01Icon} />
+          </Button>
         </Tooltip>
       </div>
     </aside>

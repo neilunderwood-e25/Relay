@@ -3,17 +3,21 @@ import type { Logger } from 'pino';
 import type {
   OperationResult,
   OrchestrationCreateRequest,
+  OrchestrationReviewRequest,
+  OrchestrationRunRequest,
   OrchestrationRun,
   OrchestrationSnapshot,
   OrchestrationStrategy,
   OrchestrationTask,
   OrchestrationTaskRequest,
+  OrchestrationVerifyRequest,
   ProviderCapability,
   ProviderId,
   TerminalDataEvent,
   TerminalExitEvent,
   TerminalReplay,
   TerminalSnapshot,
+  TaskDiffSnapshot,
   WorktreeCreateRequest,
   WorktreeSnapshot
 } from '../shared/contracts';
@@ -36,6 +40,14 @@ interface WorktreeService {
     error?: string;
   }>;
   create(request: WorktreeCreateRequest): Promise<WorktreeSnapshot>;
+  diff(worktreeId: string, taskId: string): Promise<TaskDiffSnapshot>;
+  integrate(worktreeId: string, commitMessage: string): Promise<{
+    status: 'integrated' | 'no_changes' | 'conflict';
+    commit?: string;
+    conflicts?: string[];
+    error?: string;
+  }>;
+  remove(request: { id: string; force?: boolean }): Promise<OperationResult>;
 }
 
 interface TerminalService {
@@ -47,6 +59,7 @@ interface TerminalService {
     cols?: number;
     rows?: number;
     args?: string[];
+    role?: 'worker' | 'orchestrator';
   }): Promise<TerminalSnapshot>;
   stop(id: string, force?: boolean): OperationResult;
   replay(id: string): TerminalReplay;
@@ -115,7 +128,9 @@ export class RehanOrchestrator {
       strategy,
       concurrency: clampConcurrency(request.concurrency, providers.length),
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      integrationStatus: 'pending',
+      verificationStatus: 'idle'
     };
     const tasks: OrchestrationTask[] = plans.map((plan, ordinal) => ({
       id: `task-${randomUUID().slice(0, 12)}`,
@@ -128,6 +143,8 @@ export class RehanOrchestrator {
       provider: plan.provider,
       status: 'queued',
       attempt: 0,
+      reviewStatus: 'pending',
+      integrationStatus: 'pending',
       createdAt: now,
       updatedAt: now
     }));
@@ -199,10 +216,23 @@ export class RehanOrchestrator {
       currentTask.summary = undefined;
       currentTask.startedAt = undefined;
       currentTask.completedAt = undefined;
+      currentTask.reviewStatus = 'pending';
+      currentTask.integrationStatus = 'pending';
+      currentTask.integrationCommit = undefined;
+      currentTask.integrationError = undefined;
+      currentTask.reviewedAt = undefined;
+      currentTask.integratedAt = undefined;
       currentTask.updatedAt = now;
       current.run.status = 'queued';
       current.run.error = undefined;
       current.run.completedAt = undefined;
+      current.run.integrationStatus = 'pending';
+      current.run.integrationError = undefined;
+      current.run.verificationStatus = 'idle';
+      current.run.verificationProvider = undefined;
+      current.run.verificationTerminalId = undefined;
+      current.run.verificationSummary = undefined;
+      current.run.verificationError = undefined;
       current.run.updatedAt = now;
       this.options.database.updateOrchestrationTask(currentTask);
       this.options.database.updateOrchestrationRun(current.run);
@@ -211,6 +241,204 @@ export class RehanOrchestrator {
     });
     void this.pump(task.runId);
     return { ok: true };
+  }
+
+  async diff(request: OrchestrationTaskRequest): Promise<TaskDiffSnapshot> {
+    const task = request && this.options.database.getOrchestrationTask(request.taskId);
+    if (!task?.worktreeId) throw new Error('This task does not have a worktree yet.');
+    return this.options.worktrees.diff(task.worktreeId, task.id);
+  }
+
+  async review(request: OrchestrationReviewRequest): Promise<OrchestrationSnapshot> {
+    const task = request && this.options.database.getOrchestrationTask(request.taskId);
+    if (!task) throw new Error('Orchestrator task was not found.');
+    if (!['accepted', 'rejected'].includes(request.decision)) throw new Error('Choose accept or reject.');
+    if (task.status !== 'completed') throw new Error('Only completed tasks can be reviewed.');
+    if (['integrated', 'no_changes'].includes(task.integrationStatus ?? 'pending')) {
+      throw new Error('Integrated tasks cannot be reviewed again.');
+    }
+
+    await this.enqueue(task.runId, async () => {
+      const currentTask = this.options.database.getOrchestrationTask(task.id);
+      const current = this.options.database.getOrchestration(task.runId);
+      if (!currentTask || !current) return;
+      const now = Date.now();
+      currentTask.reviewStatus = request.decision;
+      currentTask.integrationStatus = 'pending';
+      currentTask.integrationError = undefined;
+      currentTask.reviewedAt = now;
+      currentTask.updatedAt = now;
+      current.run.integrationStatus = 'reviewing';
+      current.run.integrationError = undefined;
+      current.run.updatedAt = now;
+      this.options.database.updateOrchestrationTask(currentTask);
+      this.options.database.updateOrchestrationRun(current.run);
+      this.options.database.appendEvent('orchestration.task.reviewed', {
+        runId: task.runId,
+        taskId: task.id,
+        decision: request.decision
+      });
+      this.emit(task.runId);
+    });
+    return this.requireRun(task.runId);
+  }
+
+  async integrate(request: OrchestrationRunRequest): Promise<OrchestrationSnapshot> {
+    const runId = request?.runId;
+    if (!runId) throw new Error('Orchestrator run was not found.');
+    await this.enqueue(runId, async () => {
+      const snapshot = this.requireRun(runId);
+      if (snapshot.run.status !== 'completed') throw new Error('Finish the run before integrating results.');
+      if (snapshot.tasks.some((task) => (task.reviewStatus ?? 'pending') === 'pending')) {
+        throw new Error('Accept or reject every completed task first.');
+      }
+      const accepted = snapshot.tasks
+        .filter((task) => task.reviewStatus === 'accepted')
+        .sort((left, right) => left.ordinal - right.ordinal);
+      if (accepted.length === 0) throw new Error('Accept at least one task before integrating.');
+
+      const now = Date.now();
+      snapshot.run.integrationStatus = 'integrating';
+      snapshot.run.integrationError = undefined;
+      snapshot.run.updatedAt = now;
+      this.options.database.updateOrchestrationRun(snapshot.run);
+      this.emit(runId);
+
+      for (const task of accepted) {
+        if (['integrated', 'no_changes'].includes(task.integrationStatus ?? 'pending')) continue;
+        if (!task.worktreeId) {
+          task.integrationStatus = 'failed';
+          task.integrationError = 'The task worktree is missing.';
+          this.options.database.updateOrchestrationTask(task);
+          snapshot.run.integrationStatus = 'failed';
+          snapshot.run.integrationError = task.integrationError;
+          this.options.database.updateOrchestrationRun(snapshot.run);
+          this.emit(runId);
+          return;
+        }
+        task.integrationStatus = 'integrating';
+        task.integrationError = undefined;
+        task.updatedAt = Date.now();
+        this.options.database.updateOrchestrationTask(task);
+        this.emit(runId);
+        try {
+          const result = await this.options.worktrees.integrate(task.worktreeId, `Relay: ${task.title}`.slice(0, 120));
+          task.integrationStatus = result.status;
+          task.integrationCommit = result.commit;
+          task.integrationError = result.error;
+          task.integratedAt = result.status === 'conflict' ? undefined : Date.now();
+          task.updatedAt = Date.now();
+          this.options.database.updateOrchestrationTask(task);
+          if (result.status === 'conflict') {
+            snapshot.run.integrationStatus = 'conflict';
+            snapshot.run.integrationError = result.error ?? 'Integration conflict.';
+            snapshot.run.updatedAt = Date.now();
+            this.options.database.updateOrchestrationRun(snapshot.run);
+            this.options.database.appendEvent('orchestration.integration.conflict', {
+              runId,
+              taskId: task.id,
+              conflicts: result.conflicts ?? []
+            });
+            this.emit(runId);
+            return;
+          }
+          this.options.database.appendEvent('orchestration.task.integrated', {
+            runId,
+            taskId: task.id,
+            status: result.status,
+            commit: result.commit
+          });
+        } catch (error) {
+          task.integrationStatus = 'failed';
+          task.integrationError = messageOf(error);
+          task.updatedAt = Date.now();
+          this.options.database.updateOrchestrationTask(task);
+          snapshot.run.integrationStatus = 'failed';
+          snapshot.run.integrationError = task.integrationError;
+          snapshot.run.updatedAt = Date.now();
+          this.options.database.updateOrchestrationRun(snapshot.run);
+          this.emit(runId);
+          return;
+        }
+      }
+
+      snapshot.run.integrationStatus = 'integrated';
+      snapshot.run.integrationError = undefined;
+      snapshot.run.verificationStatus = 'idle';
+      snapshot.run.updatedAt = Date.now();
+      this.options.database.updateOrchestrationRun(snapshot.run);
+      this.options.database.appendEvent('orchestration.integrated', { runId });
+      this.emit(runId);
+    });
+    return this.requireRun(runId);
+  }
+
+  async verify(request: OrchestrationVerifyRequest): Promise<OrchestrationSnapshot> {
+    const runId = request?.runId;
+    if (!runId) throw new Error('Orchestrator run was not found.');
+    await this.enqueue(runId, async () => {
+      const snapshot = this.requireRun(runId);
+      if (snapshot.run.integrationStatus !== 'integrated') throw new Error('Integrate accepted work first.');
+      if (snapshot.run.verificationStatus === 'running') throw new Error('Verification is already running.');
+      const capabilities = await this.options.detectProviders();
+      const requested = request.provider;
+      const provider = capabilities.find((candidate) => candidate.available && candidate.id === requested)
+        ?? capabilities.find((candidate) => candidate.available);
+      if (!provider) throw new Error('No supported CLI verifier is available.');
+
+      const prompt = verificationPrompt(snapshot.run, this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME);
+      const terminal = await this.options.terminals.spawn({
+        provider: provider.id,
+        avatarSeed: `${runId}-verification`,
+        name: 'Verifier',
+        cwd: snapshot.run.repoRoot,
+        cols: 120,
+        rows: 32,
+        args: verificationArgs(provider.id, prompt)
+      });
+      snapshot.run.verificationStatus = 'running';
+      snapshot.run.verificationProvider = provider.id;
+      snapshot.run.verificationTerminalId = terminal.id;
+      snapshot.run.verificationSummary = undefined;
+      snapshot.run.verificationError = undefined;
+      snapshot.run.updatedAt = Date.now();
+      this.options.database.updateOrchestrationRun(snapshot.run);
+      this.options.database.appendEvent('orchestration.verification.started', {
+        runId,
+        provider: provider.id,
+        terminalId: terminal.id
+      });
+      this.emit(runId);
+    });
+    return this.requireRun(runId);
+  }
+
+  async cleanup(request: OrchestrationRunRequest): Promise<OrchestrationSnapshot> {
+    const runId = request?.runId;
+    if (!runId) throw new Error('Orchestrator run was not found.');
+    await this.enqueue(runId, async () => {
+      const snapshot = this.requireRun(runId);
+      if (snapshot.run.integrationStatus !== 'integrated') throw new Error('Integrate accepted work before cleanup.');
+      if (!['passed', 'failed'].includes(snapshot.run.verificationStatus ?? 'idle')) {
+        throw new Error('Run final verification before cleanup.');
+      }
+      const failures: string[] = [];
+      for (const task of snapshot.tasks) {
+        if (!task.worktreeId) continue;
+        const result = await this.options.worktrees.remove({ id: task.worktreeId, force: true });
+        if (!result.ok) failures.push(result.error ?? task.title);
+        else {
+          task.worktreeId = undefined;
+          task.worktreePath = undefined;
+          task.updatedAt = Date.now();
+          this.options.database.updateOrchestrationTask(task);
+        }
+      }
+      if (failures.length > 0) throw new Error(failures.join(' '));
+      this.options.database.appendEvent('orchestration.cleaned', { runId });
+      this.emit(runId);
+    });
+    return this.requireRun(runId);
   }
 
   handleTerminalData(event: TerminalDataEvent): void {
@@ -228,7 +456,28 @@ export class RehanOrchestrator {
 
   handleTerminalExit(event: TerminalExitEvent): void {
     const task = this.options.database.getOrchestrationTaskByTerminal(event.id);
-    if (!task) return;
+    if (!task) {
+      const verification = this.options.database.getOrchestrationByVerificationTerminal(event.id);
+      if (!verification) return;
+      void this.enqueue(verification.run.id, async () => {
+        const current = this.options.database.getOrchestration(verification.run.id);
+        if (!current || current.run.verificationStatus !== 'running') return;
+        current.run.verificationStatus = event.exitCode === 0 ? 'passed' : 'failed';
+        current.run.verificationSummary = summaryFromReplay(this.safeReplay(event.id));
+        current.run.verificationError = event.exitCode === 0
+          ? undefined
+          : `Verifier exited with code ${event.exitCode}.`;
+        current.run.updatedAt = event.exitedAt;
+        this.options.database.updateOrchestrationRun(current.run);
+        this.options.database.appendEvent('orchestration.verification.finished', {
+          runId: current.run.id,
+          status: current.run.verificationStatus,
+          exitCode: event.exitCode
+        });
+        this.emit(current.run.id);
+      });
+      return;
+    }
     void this.enqueue(task.runId, async () => {
       const current = this.options.database.getOrchestrationTask(task.id);
       const run = this.options.database.getOrchestration(task.runId)?.run;
@@ -386,6 +635,12 @@ export class RehanOrchestrator {
     if (snapshot) this.options.onUpdate?.(snapshot);
   }
 
+  private requireRun(runId: string): OrchestrationSnapshot {
+    const snapshot = this.options.database.getOrchestration(runId);
+    if (!snapshot) throw new Error('Orchestrator run was not found.');
+    return snapshot;
+  }
+
   private enqueue(runId: string, operation: () => Promise<void>): Promise<void> {
     const previous = this.runTails.get(runId) ?? Promise.resolve();
     const next = previous.then(operation, operation);
@@ -417,6 +672,23 @@ function workerArgs(provider: ProviderId, prompt: string): string[] {
   return provider === 'claude'
     ? ['--print', '--permission-mode', 'acceptEdits', '--output-format', 'text', '--no-session-persistence', prompt]
     : ['--ask-for-approval', 'never', 'exec', '--sandbox', 'workspace-write', '--color', 'always', '--ephemeral', prompt];
+}
+
+function verificationPrompt(run: OrchestrationRun, orchestratorName: string): string {
+  return [
+    `You are the final verifier for ${orchestratorName} in Relay.`,
+    `Objective: ${run.objective}`,
+    `Integrated branch: ${run.baseBranch}`,
+    'Inspect the integrated changes, run the most relevant existing checks, and report defects with file references.',
+    'This is read-only verification. Do not edit files, create commits, or change Git state.',
+    'End with a concise verdict and list the checks you ran.'
+  ].join('\n\n').slice(0, 4_000);
+}
+
+function verificationArgs(provider: ProviderId, prompt: string): string[] {
+  return provider === 'claude'
+    ? ['--print', '--permission-mode', 'plan', '--output-format', 'text', '--no-session-persistence', prompt]
+    : ['--ask-for-approval', 'never', 'exec', '--sandbox', 'read-only', '--color', 'always', '--ephemeral', prompt];
 }
 
 function worktreeName(runId: string, task: OrchestrationTask): string {

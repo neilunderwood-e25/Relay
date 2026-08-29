@@ -2,7 +2,7 @@
 
 Relay is a local-first desktop multi-agent coding harness. Michael is the default orchestrator; Claude Code and Codex CLI workers operate in isolated Git worktrees on one coding project. The orchestrator name can be changed in the app.
 
-The current implementation includes **Milestone 01: technical foundation**, **Milestone 02: terminal plane**, **Milestone 03: Git worktree plane**, and **Milestone 04: orchestration core**. Michael accepts one objective, decomposes it across available CLI workers, provisions isolated worktrees, runs Claude Code and Codex non-interactively, and persists the complete run lifecycle.
+The current implementation includes **Milestone 01: technical foundation**, **Milestone 02: terminal plane**, **Milestone 03: Git worktree plane**, **Milestone 04: orchestration core**, **Milestone 05: integration plane**, and **Milestone 06: operations plane**. Michael accepts one objective, decomposes it across available CLI workers, provisions isolated worktrees, runs Claude Code and Codex non-interactively, and persists the complete lifecycle through review, integration, verification, cleanup, activity history, and recovery.
 
 ## Development
 
@@ -26,6 +26,16 @@ npm test
 npm run build
 ```
 
+Create the macOS application and DMG:
+
+```bash
+npm run dist:mac
+```
+
+The macOS bundle uses `build/relay-app-icon.icns`, while development mode uses
+`build/relay-app-icon.png` for the live Dock icon. Their editable source is
+`build/relay-app-icon.svg`.
+
 ## Architecture
 
 ```text
@@ -48,10 +58,21 @@ React renderer
   ├── orchestrator command + live task board
   ├── xterm.js terminal workspace
   ├── worktree creation + status screen
+  ├── activity ledger + runtime health
+  ├── persistent run defaults + recovery
   └── Zustand terminal state
 ```
 
 The renderer has no direct Node access. Filesystem, database, Git, PTY, and provider operations remain in the Electron main process and are exposed through narrow typed IPC contracts.
+
+## UI system
+
+- Shadcn UI uses the `bcivVbaS` preset configuration: Base Nova, Base UI, Zinc tokens, Hugeicons, and CSS variables.
+- Shared Button, Card, Input, Select, Tabs, Badge, Alert, Dialog, Separator, and Tooltip primitives live under `src/renderer/src/components/ui`.
+- Renderer surfaces use the preset's neutral semantic tokens; provider and status colors are limited to explicit semantic roles.
+- The startup wizard, orchestrator monitor and terminal, worker console, worktree workspace, empty/error states, selects, tooltips, and rename editor share one spacing, border, type, and focus treatment.
+- Compact-height and narrow-window rules preserve usable controls without introducing custom component sizes.
+- Renderer design-system invariants are covered by the automated test suite and the production build is the final verification gate.
 
 ## Orchestrator hive
 
@@ -107,3 +128,20 @@ Michael's identity is refreshed by the harness while `memory.md` is never overwr
 - Run and task states are persisted in SQLite and interrupted work is surfaced as blocked after restart.
 - Runs support bounded concurrency, stop, and task retry.
 - Worker output is retained in the terminal replay buffer and summarized when the process exits.
+
+## Integration lifecycle
+
+- Completed worker results expose a bounded per-file diff without changing Git state.
+- Every task must be explicitly accepted or rejected before integration begins.
+- Accepted tasks are squashed and applied to the checked-out base branch in task order.
+- Integration refuses a dirty project checkout or the wrong checked-out branch.
+- Conflicts are reported by file and aborted without leaving the project in a conflicted state.
+- Final verification runs through an available CLI in read-only mode and retains its report.
+- Cleanup removes completed managed worktrees only after verification; task branches remain for recovery.
+
+## Operations lifecycle
+
+- Activity presents the append-only SQLite event ledger with run, Git, terminal, and system filters.
+- Run mode, agent concurrency, and preferred verifier defaults persist inside the selected Harness Home.
+- Runtime health reports active terminals, running orchestrations, managed worktrees, and event volume.
+- Recovery marks interrupted work as blocked, repairs hive projections, and reports missing worktrees without deleting branches or files.

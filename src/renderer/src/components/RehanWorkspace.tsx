@@ -5,9 +5,13 @@ import {
   Audit01Icon,
   Cancel01Icon,
   ChatGptIcon,
+  CheckmarkCircle02Icon,
+  CleanIcon,
   ClaudeIcon,
   Edit02Icon,
   GitBranchIcon,
+  GitMergeIcon,
+  FileViewIcon,
   Layers01Icon,
   PlayIcon,
   RefreshIcon,
@@ -15,6 +19,7 @@ import {
   Robot01Icon,
   SquareStopIcon,
   SquareTerminalIcon,
+  ShieldCheckIcon,
   Task01Icon,
   Tick02Icon,
   WorkflowIcon
@@ -25,20 +30,31 @@ import {
   type OrchestrationTask,
   type ProviderCapability,
   type ProviderId,
-  type RepositorySnapshot
+  type RelayPreferences,
+  type RepositorySnapshot,
+  type TaskDiffSnapshot
 } from '../../../shared/contracts';
 import { personNameForSeed } from '../../../shared/agentIdentity';
 import { planObjective } from '../../../shared/orchestration';
 import { AgentAvatar } from './AgentAvatar';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
+import { Alert, AlertDescription } from './ui/alert';
 import { Card, CardContent, CardHeader } from './ui/Card';
 import { Icon } from './ui/Icon';
 import { Input } from './ui/Input';
-import { Tooltip } from './ui/Tooltip';
+import { Tooltip } from './ui/app-tooltip';
 import { RichTextEditor } from './RichTextEditor';
 import { OrchestratorTerminal } from './OrchestratorTerminal';
 import { Tabs, TabsList, TabsTrigger } from './ui/Tabs';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from './ui/dialog';
 
 const STRATEGIES: Array<{
   id: OrchestrationStrategy;
@@ -72,6 +88,7 @@ export function RehanWorkspace({
   orchestratorName,
   orchestratorProvider,
   orchestratorModel,
+  preferences,
   onRenameOrchestrator,
   onChooseDirectory,
   onOpenTerminal
@@ -81,6 +98,7 @@ export function RehanWorkspace({
   orchestratorName: string;
   orchestratorProvider: ProviderId;
   orchestratorModel: string | null;
+  preferences: RelayPreferences;
   onRenameOrchestrator: (name: string) => Promise<boolean>;
   onChooseDirectory: () => void;
   onOpenTerminal: (terminalId: string) => void;
@@ -88,7 +106,7 @@ export function RehanWorkspace({
   const [repository, setRepository] = useState<RepositorySnapshot | null>(null);
   const [runs, setRuns] = useState<OrchestrationSnapshot[]>([]);
   const [objective, setObjective] = useState('');
-  const [strategy, setStrategy] = useState<OrchestrationStrategy>('balanced');
+  const [strategy, setStrategy] = useState<OrchestrationStrategy>(preferences.defaultStrategy);
   const [selectedProviders, setSelectedProviders] = useState<ProviderId[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -102,6 +120,8 @@ export function RehanWorkspace({
   useEffect(() => {
     if (!editingName) setNameDraft(orchestratorName);
   }, [editingName, orchestratorName]);
+
+  useEffect(() => setStrategy(preferences.defaultStrategy), [preferences.defaultStrategy]);
 
   const availableProviders = useMemo(
     () => providers.filter((provider) => provider.available).map((provider) => provider.id),
@@ -169,7 +189,7 @@ export function RehanWorkspace({
         objective: objective.trim(),
         strategy,
         providers: selectedProviders,
-        concurrency: Math.min(2, selectedProviders.length)
+        concurrency: Math.min(preferences.maxConcurrentAgents, selectedProviders.length)
       });
       setRuns((current) => [created, ...current.filter((run) => run.run.id !== created.run.id)]);
       setSelectedRunId(created.run.id);
@@ -205,6 +225,10 @@ export function RehanWorkspace({
     else setError('Could not rename the orchestrator.');
     setSavingName(false);
   };
+
+  const replaceRun = useCallback((snapshot: OrchestrationSnapshot): void => {
+    setRuns((current) => current.map((candidate) => candidate.run.id === snapshot.run.id ? snapshot : candidate));
+  }, []);
 
   return (
     <section className="rehan-workspace">
@@ -246,7 +270,7 @@ export function RehanWorkspace({
               </Tooltip>
             </>
           )}
-          {activeCount > 0 && <Badge variant="success">{activeCount} active</Badge>}
+          {activeCount > 0 && <Badge>{activeCount} active</Badge>}
         </div>
         <div className="orchestrator-header-controls">
           <Tabs value={workspaceMode} onValueChange={(value) => setWorkspaceMode(value as 'monitor' | 'terminal')}>
@@ -269,7 +293,7 @@ export function RehanWorkspace({
         </div>
       </header>
 
-      {error && <div className="worktree-error" role="alert"><Icon icon={Alert02Icon} size={15} />{error}</div>}
+      {error && <Alert variant="destructive" className="worktree-error"><Icon icon={Alert02Icon} size={15} /><AlertDescription>{error}</AlertDescription></Alert>}
 
       {workspaceMode === 'terminal' ? (
         <OrchestratorTerminal
@@ -376,6 +400,9 @@ export function RehanWorkspace({
                 onStop={stop}
                 onRetry={retry}
                 onOpenTerminal={onOpenTerminal}
+                onSnapshot={replaceRun}
+                onError={setError}
+                verificationProvider={preferences.verificationProvider}
               />
             ) : (
               <Card className="rehan-ready-card">
@@ -407,21 +434,81 @@ export function RehanWorkspace({
   );
 }
 
-function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal }: {
+function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal, onSnapshot, onError, verificationProvider }: {
   snapshot: OrchestrationSnapshot;
   onStop: (runId: string) => Promise<void>;
   onRetry: (taskId: string) => Promise<void>;
   onOpenTerminal: (terminalId: string) => void;
+  onSnapshot: (snapshot: OrchestrationSnapshot) => void;
+  onError: (message: string | null) => void;
+  verificationProvider: ProviderId | null;
 }): React.JSX.Element {
   const { run, tasks } = snapshot;
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [diff, setDiff] = useState<TaskDiffSnapshot | null>(null);
+  const [diffTask, setDiffTask] = useState<OrchestrationTask | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [action, setAction] = useState<'review' | 'integrate' | 'verify' | 'cleanup' | null>(null);
   useEffect(() => { setSelectedTaskId(null); }, [run.id]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
   const completed = tasks.filter((task) => task.status === 'completed').length;
   const progress = tasks.length > 0 ? Math.round((completed / tasks.length) * 100) : 0;
   const active = ['queued', 'running', 'stopping'].includes(run.status);
+  const reviewed = tasks.filter((task) => (task.reviewStatus ?? 'pending') !== 'pending').length;
+  const accepted = tasks.filter((task) => task.reviewStatus === 'accepted').length;
+  const reviewReady = run.status === 'completed' && reviewed === tasks.length && accepted > 0;
+  const integrationStatus = run.integrationStatus ?? 'pending';
+  const verificationStatus = run.verificationStatus ?? 'idle';
+
+  const openDiff = async (task: OrchestrationTask): Promise<void> => {
+    setDiffTask(task);
+    setDiff(null);
+    setDiffLoading(true);
+    onError(null);
+    try {
+      setDiff(await window.relay.getOrchestrationTaskDiff({ taskId: task.id }));
+    } catch (cause) {
+      onError(messageOf(cause));
+      setDiffTask(null);
+    } finally {
+      setDiffLoading(false);
+    }
+  };
+
+  const review = async (decision: 'accepted' | 'rejected'): Promise<void> => {
+    if (!diffTask) return;
+    setAction('review');
+    onError(null);
+    try {
+      onSnapshot(await window.relay.reviewOrchestrationTask({ taskId: diffTask.id, decision }));
+      setDiffTask(null);
+      setDiff(null);
+    } catch (cause) {
+      onError(messageOf(cause));
+    } finally {
+      setAction(null);
+    }
+  };
+
+  const runAction = async (kind: 'integrate' | 'verify' | 'cleanup'): Promise<void> => {
+    setAction(kind);
+    onError(null);
+    try {
+      const next = kind === 'integrate'
+        ? await window.relay.integrateOrchestration({ runId: run.id })
+        : kind === 'verify'
+          ? await window.relay.verifyOrchestration({ runId: run.id, provider: verificationProvider ?? undefined })
+          : await window.relay.cleanupOrchestration({ runId: run.id });
+      onSnapshot(next);
+    } catch (cause) {
+      onError(messageOf(cause));
+    } finally {
+      setAction(null);
+    }
+  };
 
   return (
+    <>
     <Card className="rehan-mission-card">
       <CardHeader className="rehan-mission-header">
         <div className="rehan-mission-heading">
@@ -440,7 +527,65 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal }: {
         </div>
       </CardHeader>
       <div className="rehan-progress"><span style={{ width: `${progress}%` }} /></div>
+      {run.status === 'completed' && (
+        <div className="integration-bar">
+          <div className="integration-progress-copy">
+            <span>Review</span>
+            <strong>{reviewed}/{tasks.length}</strong>
+            <IntegrationBadge status={integrationStatus} />
+            {verificationStatus !== 'idle' && <IntegrationBadge status={verificationStatus} />}
+          </div>
+          <div className="integration-actions">
+            {integrationStatus !== 'integrated' && (
+              <Tooltip content="Integrate work">
+                <span className="disabled-tooltip-target">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!reviewReady || action !== null || integrationStatus === 'integrating'}
+                    onClick={() => void runAction('integrate')}
+                  >
+                    <Icon icon={GitMergeIcon} size={13} /> Integrate
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
+            {integrationStatus === 'integrated' && verificationStatus !== 'running' && verificationStatus !== 'passed' && (
+              <Tooltip content="Run verification">
+                <Button size="sm" variant="secondary" disabled={action !== null} onClick={() => void runAction('verify')}>
+                  <Icon icon={ShieldCheckIcon} size={13} /> Verify
+                </Button>
+              </Tooltip>
+            )}
+            {run.verificationTerminalId && (
+              <Tooltip content="Open verifier">
+                <Button size="icon-sm" variant="ghost" aria-label="Open verifier" onClick={() => onOpenTerminal(run.verificationTerminalId!)}>
+                  <Icon icon={SquareTerminalIcon} size={13} />
+                </Button>
+              </Tooltip>
+            )}
+            {integrationStatus === 'integrated' && ['passed', 'failed'].includes(verificationStatus) && tasks.some((task) => task.worktreeId) && (
+              <Tooltip content="Clean worktrees">
+                <Button size="sm" variant="ghost" disabled={action !== null} onClick={() => void runAction('cleanup')}>
+                  <Icon icon={CleanIcon} size={13} /> Cleanup
+                </Button>
+              </Tooltip>
+            )}
+          </div>
+        </div>
+      )}
       <CardContent className="rehan-mission-content">
+        {run.integrationError && (
+          <Alert variant="destructive" className="integration-alert">
+            <Icon icon={Alert02Icon} size={14} /><AlertDescription>{run.integrationError}</AlertDescription>
+          </Alert>
+        )}
+        {(run.verificationSummary || run.verificationError) && (
+          <div className={`verification-result ${verificationStatus}`}>
+            <div><Icon icon={ShieldCheckIcon} size={13} /><strong>Verification</strong></div>
+            <pre>{run.verificationError ?? run.verificationSummary}</pre>
+          </div>
+        )}
         <div className="rehan-task-board">
           {tasks.map((task) => (
             <button
@@ -458,22 +603,68 @@ function MissionCard({ snapshot, onStop, onRetry, onOpenTerminal }: {
                 <span>{personNameForSeed(task.id)} · {task.deliverable}</span>
               </span>
               <span className={`task-state ${task.status}`} />
+              {(task.reviewStatus ?? 'pending') !== 'pending' && (
+                <span className={`task-review-state ${task.reviewStatus}`}>
+                  {task.reviewStatus === 'accepted' ? 'Accepted' : 'Rejected'}
+                </span>
+              )}
             </button>
           ))}
         </div>
 
         {selectedTask && (
-          <TaskDetail task={selectedTask} onRetry={onRetry} onOpenTerminal={onOpenTerminal} />
+          <TaskDetail task={selectedTask} onRetry={onRetry} onOpenTerminal={onOpenTerminal} onReview={openDiff} />
         )}
       </CardContent>
     </Card>
+    <Dialog open={Boolean(diffTask)} onOpenChange={(open) => { if (!open && action !== 'review') setDiffTask(null); }}>
+      <DialogContent className="diff-dialog" showCloseButton={action !== 'review'}>
+        <DialogHeader>
+          <DialogTitle>{diffTask?.title ?? 'Review changes'}</DialogTitle>
+          <DialogDescription>{diff?.branch ?? diffTask?.branch ?? 'Task worktree'}</DialogDescription>
+        </DialogHeader>
+        {diffLoading ? (
+          <div className="diff-loading">Loading changes…</div>
+        ) : diff ? (
+          <div className="diff-body">
+            <div className="diff-summary">
+              <Badge variant="outline">{diff.files.length} files</Badge>
+              <span className="diff-additions">+{diff.additions}</span>
+              <span className="diff-deletions">−{diff.deletions}</span>
+              {diff.truncated && <Badge variant="secondary">Truncated</Badge>}
+            </div>
+            <div className="diff-files">
+              {diff.files.map((file) => (
+                <div key={`${file.status}-${file.path}`}>
+                  <span>{fileStatusLabel(file.status)}</span>
+                  <code>{file.path}</code>
+                  <small><b>+{file.additions}</b> −{file.deletions}</small>
+                </div>
+              ))}
+              {diff.files.length === 0 && <span>No file changes</span>}
+            </div>
+            <pre className="diff-patch">{diff.patch || 'No patch to display.'}</pre>
+          </div>
+        ) : null}
+        <DialogFooter className="diff-footer">
+          <Button variant="destructive" disabled={!diff || action === 'review'} onClick={() => void review('rejected')}>
+            Reject
+          </Button>
+          <Button disabled={!diff || action === 'review'} onClick={() => void review('accepted')}>
+            <Icon icon={CheckmarkCircle02Icon} size={13} /> Accept
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 
-function TaskDetail({ task, onRetry, onOpenTerminal }: {
+function TaskDetail({ task, onRetry, onOpenTerminal, onReview }: {
   task: OrchestrationTask;
   onRetry: (taskId: string) => Promise<void>;
   onOpenTerminal: (terminalId: string) => void;
+  onReview: (task: OrchestrationTask) => Promise<void>;
 }): React.JSX.Element {
   const retryable = ['blocked', 'failed', 'stopped'].includes(task.status);
   return (
@@ -484,12 +675,21 @@ function TaskDetail({ task, onRetry, onOpenTerminal }: {
           {task.branch && <span><Icon icon={GitBranchIcon} size={11} />{task.branch.replace(/^(?:relay|foundry)\//, '')}</span>}
         </div>
         <p>{task.instructions}</p>
-        {(task.error || task.summary) && (
-          <pre className={task.error ? 'error' : ''}>{task.error ?? task.summary}</pre>
+        {(task.error || task.integrationError || task.summary) && (
+          <pre className={task.error || task.integrationError ? 'error' : ''}>
+            {task.error ?? task.integrationError ?? task.summary}
+          </pre>
         )}
       </div>
       <div className="rehan-detail-actions">
         <StatusBadge status={task.status} />
+        {task.status === 'completed' && task.worktreeId && !['integrated', 'no_changes'].includes(task.integrationStatus ?? 'pending') && (
+          <Tooltip content="Review diff">
+            <Button variant="secondary" size="sm" onClick={() => void onReview(task)}>
+              <Icon icon={FileViewIcon} size={13} /> Review
+            </Button>
+          </Tooltip>
+        )}
         {task.terminalId && (
           <Tooltip content="Open terminal">
             <Button variant="secondary" size="sm" aria-label="Open terminal" onClick={() => onOpenTerminal(task.terminalId!)}>
@@ -511,13 +711,26 @@ function TaskDetail({ task, onRetry, onOpenTerminal }: {
 
 function StatusBadge({ status }: { status: string }): React.JSX.Element {
   const variant = status === 'completed'
-    ? 'success'
+    ? 'default'
     : ['failed', 'blocked', 'stopped'].includes(status)
-      ? 'warning'
+      ? 'destructive'
       : status === 'running'
-        ? 'success'
+        ? 'default'
         : 'secondary';
   return <Badge variant={variant}>{statusLabel(status)}</Badge>;
+}
+
+function IntegrationBadge({ status }: { status: string }): React.JSX.Element {
+  const variant = ['integrated', 'passed'].includes(status)
+    ? 'default'
+    : ['conflict', 'failed'].includes(status)
+      ? 'destructive'
+      : 'secondary';
+  return <Badge variant={variant}>{statusLabel(status)}</Badge>;
+}
+
+function fileStatusLabel(status: TaskDiffSnapshot['files'][number]['status']): string {
+  return status.charAt(0).toUpperCase();
 }
 
 function roleLabel(role: OrchestrationTask['role']): string {

@@ -17,11 +17,12 @@ import type {
 } from '../../../shared/contracts';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
+import { Alert, AlertDescription } from './ui/alert';
 import { Card, CardContent, CardHeader } from './ui/Card';
 import { Icon } from './ui/Icon';
 import { Input } from './ui/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/Select';
-import { Tooltip } from './ui/Tooltip';
+import { Tooltip } from './ui/app-tooltip';
 
 export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch }: {
   cwd: string;
@@ -96,7 +97,7 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
       <header className="dashboard-header">
         <div className="dashboard-title">
           <h1>Worktrees</h1>
-          <Badge variant={managedCount > 0 ? 'success' : 'secondary'}>{managedCount}</Badge>
+          <Badge variant={managedCount > 0 ? 'default' : 'secondary'}>{managedCount}</Badge>
         </div>
         <div className="worker-actions">
           <Tooltip content="Choose project">
@@ -112,7 +113,7 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
         </div>
       </header>
 
-      {error && <div className="worktree-error" role="alert"><Icon icon={Alert02Icon} size={15} />{error}</div>}
+      {error && <Alert variant="destructive" className="worktree-error"><Icon icon={Alert02Icon} size={15} /><AlertDescription>{error}</AlertDescription></Alert>}
 
       {!loading && (!repository?.isRepository) ? (
         <Card className="worktree-empty-card">
@@ -135,7 +136,7 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
                 onChange={(event) => setName(event.target.value)}
                 onKeyDown={(event) => { if (event.key === 'Enter') void create(); }}
               />
-              <Select value={baseBranch || undefined} onValueChange={setBaseBranch} disabled={busy !== null || loading || !repository?.branches.length}>
+              <Select value={baseBranch || undefined} onValueChange={(value) => setBaseBranch(value ?? '')} disabled={busy !== null || loading || !repository?.branches.length}>
                 <SelectTrigger aria-label="Base branch">
                   <SelectValue placeholder="No commits" />
                 </SelectTrigger>
@@ -244,11 +245,11 @@ function WorktreeCard({ worktree, providers, busy, onLaunch, onRemove }: {
 }
 
 function StatusBadge({ worktree }: { worktree: WorktreeSnapshot }): React.JSX.Element {
-  if (worktree.status === 'missing') return <Badge variant="warning">Missing</Badge>;
-  if (worktree.status === 'locked') return <Badge variant="warning">Locked</Badge>;
-  if (worktree.dirty) return <Badge variant="warning">Changes</Badge>;
-  if (worktree.ahead > 0) return <Badge variant="warning">Ahead {worktree.ahead}</Badge>;
-  return <Badge variant="success">Clean</Badge>;
+  if (worktree.status === 'missing') return <Badge variant="destructive">Missing</Badge>;
+  if (worktree.status === 'locked') return <Badge variant="outline">Locked</Badge>;
+  if (worktree.dirty) return <Badge variant="outline">Changes</Badge>;
+  if (worktree.ahead > 0) return <Badge variant="outline">Ahead {worktree.ahead}</Badge>;
+  return <Badge>Clean</Badge>;
 }
 
 function messageOf(cause: unknown): string {

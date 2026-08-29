@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
@@ -105,6 +105,53 @@ describe('WorktreeManager', () => {
       error: 'Worktree has unmerged commits.'
     });
     expect(existsSync(created.path)).toBe(true);
+    database.close();
+  });
+
+  it('builds a review diff for tracked and untracked changes', async () => {
+    const { repo, database, manager } = fixture();
+    const created = await manager.create({ repoPath: repo, name: 'review-diff' });
+    writeFileSync(join(created.path, 'README.md'), '# Updated\n');
+    writeFileSync(join(created.path, 'new-file.ts'), 'export const ready = true;\n');
+
+    const diff = await manager.diff(created.id, 'task-review');
+
+    expect(diff).toMatchObject({ taskId: 'task-review', branch: created.branch, truncated: false });
+    expect(diff.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'README.md', status: 'modified' }),
+      expect.objectContaining({ path: 'new-file.ts', status: 'added' })
+    ]));
+    expect(diff.patch).toContain('+export const ready = true;');
+    database.close();
+  });
+
+  it('squashes and integrates task changes into the base branch', async () => {
+    const { repo, database, manager } = fixture();
+    const created = await manager.create({ repoPath: repo, name: 'integrate-task' });
+    writeFileSync(join(created.path, 'feature.ts'), 'export const feature = true;\n');
+
+    const result = await manager.integrate(created.id, 'Relay: integrate task');
+
+    expect(result.status).toBe('integrated');
+    expect(existsSync(join(repo, 'feature.ts'))).toBe(true);
+    expect(git(repo, 'log', '-1', '--pretty=%s')).toBe('Relay: integrate task');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+    database.close();
+  });
+
+  it('aborts conflicts without leaving the project checkout conflicted', async () => {
+    const { repo, database, manager } = fixture();
+    const created = await manager.create({ repoPath: repo, name: 'conflict-task' });
+    writeFileSync(join(created.path, 'README.md'), '# Agent version\n');
+    writeFileSync(join(repo, 'README.md'), '# Main version\n');
+    git(repo, 'add', 'README.md');
+    git(repo, 'commit', '-m', 'Move main forward');
+
+    const result = await manager.integrate(created.id, 'Relay: conflicting task');
+
+    expect(result).toMatchObject({ status: 'conflict', conflicts: ['README.md'] });
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+    expect(readFileSync(join(repo, 'README.md'), 'utf8')).toBe('# Main version\n');
     database.close();
   });
 

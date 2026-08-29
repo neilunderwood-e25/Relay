@@ -6,6 +6,8 @@ import './styles.css';
 const root = document.getElementById('root');
 if (!root) throw new Error('Renderer root element was not found');
 
+document.documentElement.classList.add('dark');
+
 createRoot(root).render(
   <StrictMode>
     <App />

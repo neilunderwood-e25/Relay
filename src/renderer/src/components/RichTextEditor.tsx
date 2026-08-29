@@ -10,7 +10,7 @@ import {
 } from '@hugeicons/core-free-icons';
 import { Button } from './ui/Button';
 import { Icon } from './ui/Icon';
-import { Tooltip } from './ui/Tooltip';
+import { Tooltip } from './ui/app-tooltip';
 
 const MAX_LENGTH = 2_000;
 

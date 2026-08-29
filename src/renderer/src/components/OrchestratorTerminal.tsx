@@ -13,9 +13,10 @@ import { orchestratorModelLabel } from '../../../shared/orchestratorModels';
 import { useTerminalStore } from '../store/terminals';
 import { TerminalView } from './TerminalView';
 import { Button } from './ui/Button';
+import { Alert, AlertDescription } from './ui/alert';
 import { Card, CardContent, CardFooter, CardHeader } from './ui/Card';
 import { Icon } from './ui/Icon';
-import { Tooltip } from './ui/Tooltip';
+import { Tooltip } from './ui/app-tooltip';
 
 export function OrchestratorTerminal({
   cwd,
@@ -120,7 +121,7 @@ export function OrchestratorTerminal({
         </div>
       </CardHeader>
 
-      {error && <div className="orchestrator-terminal-error" role="alert">{error}</div>}
+      {error && <Alert variant="destructive" className="orchestrator-terminal-error"><AlertDescription>{error}</AlertDescription></Alert>}
 
       <CardContent className="terminal-card-content">
         {terminal ? (

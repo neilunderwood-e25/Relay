@@ -8,6 +8,7 @@ import type {
   ProviderId,
   TerminalReplay,
   TerminalSnapshot,
+  TaskDiffSnapshot,
   WorktreeSnapshot
 } from '../src/shared/contracts';
 import { RelayDatabase } from '../src/main/database';
@@ -23,6 +24,8 @@ afterEach(() => {
 
 class FakeWorktrees {
   created: WorktreeSnapshot[] = [];
+  integrated: string[] = [];
+  removed: string[] = [];
 
   async inspect(): Promise<{
     isRepository: boolean;
@@ -51,6 +54,30 @@ class FakeWorktrees {
     };
     this.created.push(worktree);
     return worktree;
+  }
+
+  async diff(worktreeId: string, taskId: string): Promise<TaskDiffSnapshot> {
+    const worktree = this.created.find((candidate) => candidate.id === worktreeId)!;
+    return {
+      taskId,
+      branch: worktree.branch,
+      baseBranch: worktree.baseBranch,
+      files: [{ path: 'feature.ts', status: 'modified', additions: 2, deletions: 1 }],
+      additions: 2,
+      deletions: 1,
+      patch: '+feature',
+      truncated: false
+    };
+  }
+
+  async integrate(worktreeId: string): Promise<{ status: 'integrated'; commit: string }> {
+    this.integrated.push(worktreeId);
+    return { status: 'integrated', commit: `commit-${this.integrated.length}` };
+  }
+
+  async remove(request: { id: string }): Promise<{ ok: true }> {
+    this.removed.push(request.id);
+    return { ok: true };
   }
 }
 
@@ -196,6 +223,49 @@ describe('RehanOrchestrator', () => {
     await expect(orchestrator.retry({ taskId: task.id })).resolves.toEqual({ ok: true });
     await eventually(() => terminals.spawned.length === 2);
     expect(database.getOrchestration(created.run.id)?.run.status).toBe('running');
+    database.close();
+  });
+
+  it('reviews, integrates in task order, verifies, and cleans worktrees', async () => {
+    const { database, worktrees, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Build; Verify',
+      strategy: 'parallel',
+      providers: ['claude', 'codex'],
+      concurrency: 2
+    });
+    await eventually(() => terminals.spawned.length === 2);
+    for (const { snapshot } of terminals.spawned.slice(0, 2)) {
+      orchestrator.handleTerminalExit({ id: snapshot.id, exitCode: 0, exitedAt: Date.now() });
+    }
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
+    const completed = database.getOrchestration(created.run.id)!;
+
+    await expect(orchestrator.diff({ taskId: completed.tasks[0].id }))
+      .resolves.toMatchObject({ taskId: completed.tasks[0].id, additions: 2 });
+    for (const task of completed.tasks) {
+      await orchestrator.review({ taskId: task.id, decision: 'accepted' });
+    }
+    const integrated = await orchestrator.integrate({ runId: created.run.id });
+
+    expect(worktrees.integrated).toEqual(worktrees.created.map((worktree) => worktree.id));
+    expect(integrated.run.integrationStatus).toBe('integrated');
+    expect(integrated.tasks.map((task) => task.integrationCommit)).toEqual(['commit-1', 'commit-2']);
+
+    const verifying = await orchestrator.verify({ runId: created.run.id, provider: 'codex' });
+    expect(verifying.run).toMatchObject({ verificationStatus: 'running', verificationProvider: 'codex' });
+    expect(terminals.spawned.at(-1)?.args).toContain('read-only');
+    orchestrator.handleTerminalExit({
+      id: verifying.run.verificationTerminalId!,
+      exitCode: 0,
+      exitedAt: Date.now()
+    });
+    await eventually(() => database.getOrchestration(created.run.id)?.run.verificationStatus === 'passed');
+
+    const cleaned = await orchestrator.cleanup({ runId: created.run.id });
+    expect(worktrees.removed).toEqual(worktrees.created.map((worktree) => worktree.id));
+    expect(cleaned.tasks.every((task) => !task.worktreeId)).toBe(true);
     database.close();
   });
 });

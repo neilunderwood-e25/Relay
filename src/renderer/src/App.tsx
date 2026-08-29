@@ -13,14 +13,18 @@ import {
   type ProviderId
 } from '../../shared/contracts';
 import { AppSidebar, type AppView } from './components/AppSidebar';
+import { ActivityWorkspace } from './components/ActivityWorkspace';
 import { RehanWorkspace } from './components/RehanWorkspace';
+import { SettingsWorkspace } from './components/SettingsWorkspace';
 import { StartupWizard } from './components/StartupWizard';
 import { TerminalWorkspace } from './components/TerminalWorkspace';
 import { WorktreesWorkspace } from './components/WorktreesWorkspace';
 import { Badge } from './components/ui/Badge';
 import { Button } from './components/ui/Button';
+import { Alert, AlertAction, AlertDescription } from './components/ui/alert';
 import { Icon } from './components/ui/Icon';
-import { Tooltip, TooltipProvider } from './components/ui/Tooltip';
+import { Tooltip } from './components/ui/app-tooltip';
+import { TooltipProvider } from './components/ui/Tooltip';
 import { useTerminalStore } from './store/terminals';
 import relayLogo from './assets/relay-logo.svg';
 
@@ -169,7 +173,7 @@ export function App(): React.JSX.Element {
   const { snapshot } = state;
   if (!startupVerified) {
     return (
-      <TooltipProvider delayDuration={250}>
+      <TooltipProvider delay={250}>
         <div className="relay-shell">
           <AppTitlebar
             snapshot={snapshot}
@@ -191,7 +195,7 @@ export function App(): React.JSX.Element {
   const projectName = projectNameFromPath(cwd);
 
   return (
-    <TooltipProvider delayDuration={250}>
+    <TooltipProvider delay={250}>
       <div className="relay-shell">
         <AppTitlebar snapshot={snapshot} projectName={projectName} />
 
@@ -211,6 +215,7 @@ export function App(): React.JSX.Element {
                 orchestratorName={snapshot.workspace.orchestratorName}
                 orchestratorProvider={snapshot.workspace.orchestratorProvider}
                 orchestratorModel={snapshot.workspace.orchestratorModel}
+                preferences={snapshot.preferences}
                 onRenameOrchestrator={renameOrchestrator}
                 onChooseDirectory={() => void chooseDirectory()}
                 onOpenTerminal={(terminalId) => void openTerminal(terminalId)}
@@ -220,7 +225,7 @@ export function App(): React.JSX.Element {
                 <header className="dashboard-header">
                   <div className="dashboard-title">
                     <h1>Console</h1>
-                    <Badge variant={runningCount > 0 ? 'success' : 'secondary'}>{runningCount}</Badge>
+                    <Badge variant={runningCount > 0 ? 'default' : 'secondary'}>{runningCount}</Badge>
                   </div>
                   <div className="worker-actions">
                     {snapshot.providers.map((provider) => (
@@ -241,25 +246,36 @@ export function App(): React.JSX.Element {
                 </header>
 
                 {terminalError && (
-                  <div className="inline-error" role="alert">
-                    <span>{terminalError}</span>
+                  <Alert variant="destructive" className="inline-error">
+                    <AlertDescription>{terminalError}</AlertDescription>
+                    <AlertAction>
                     <Tooltip content="Dismiss error">
                       <Button variant="ghost" size="icon" aria-label="Dismiss error" onClick={() => setTerminalError(null)}>
                         <Icon icon={Cancel01Icon} size={15} />
                       </Button>
                     </Tooltip>
-                  </div>
+                    </AlertAction>
+                  </Alert>
                 )}
 
                 <TerminalWorkspace />
               </>
-            ) : (
+            ) : activeView === 'worktrees' ? (
               <WorktreesWorkspace
                 cwd={cwd}
                 providers={snapshot.providers}
                 onChooseDirectory={() => void chooseDirectory()}
                 onLaunch={async (provider, worktreeCwd) => {
                   if (await launch(provider, worktreeCwd)) setActiveView('console');
+                }}
+              />
+            ) : activeView === 'activity' ? (
+              <ActivityWorkspace />
+            ) : (
+              <SettingsWorkspace
+                snapshot={snapshot}
+                onPreferencesChange={(preferences) => {
+                  setState({ status: 'ready', snapshot: { ...snapshot, preferences } });
                 }}
               />
             )}

@@ -16,7 +16,7 @@ import { Button } from './ui/Button';
 import { Card, CardContent, CardFooter, CardHeader } from './ui/Card';
 import { Icon } from './ui/Icon';
 import { Tabs, TabsList, TabsTrigger } from './ui/Tabs';
-import { Tooltip } from './ui/Tooltip';
+import { Tooltip } from './ui/app-tooltip';
 
 export function TerminalWorkspace(): React.JSX.Element {
   const allTerminals = useTerminalStore((state) => state.terminals);

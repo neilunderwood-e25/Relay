@@ -25,7 +25,7 @@ describe('RelayDatabase', () => {
 
     expect(database.health()).toMatchObject({
       open: true,
-      schemaVersion: 4
+      schemaVersion: 5
     });
 
     database.close();
@@ -42,6 +42,27 @@ describe('RelayDatabase', () => {
     database.open();
     expect(database.getValue('foundation')).toEqual({ ready: true });
     expect(eventId).toBe(1);
+    database.close();
+  });
+
+  it('pages and filters the activity ledger', () => {
+    const database = temporaryDatabase();
+    database.open();
+    database.appendEvent('app.started', { version: '1.0.0' });
+    database.appendEvent('worktree.created', { branch: 'relay/a' });
+    database.appendEvent('orchestration.created', { runId: 'run-1' });
+    database.appendEvent('terminal.started', { terminalId: 'terminal-1' });
+
+    expect(database.countEvents()).toBe(4);
+    const first = database.listEvents({ limit: 2 });
+    expect(first.events.map(({ type }) => type)).toEqual(['terminal.started', 'orchestration.created']);
+    expect(first.hasMore).toBe(true);
+    expect(database.listEvents({ beforeId: first.nextBeforeId, limit: 2 }).events.map(({ type }) => type))
+      .toEqual(['worktree.created', 'app.started']);
+    expect(database.listEvents({ category: 'worktree' }).events).toMatchObject([
+      { type: 'worktree.created', payload: { branch: 'relay/a' } }
+    ]);
+    expect(database.listEvents({ category: 'system' }).events.map(({ type }) => type)).toEqual(['app.started']);
     database.close();
   });
 

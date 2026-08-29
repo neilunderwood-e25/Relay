@@ -11,6 +11,7 @@ import { DEFAULT_AGENT_NAMES } from '../../../shared/contracts';
 import { ORCHESTRATOR_MODELS } from '../../../shared/orchestratorModels';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
+import { Alert, AlertDescription } from './ui/alert';
 import { Card, CardContent, CardFooter, CardHeader } from './ui/Card';
 import { Icon } from './ui/Icon';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/Select';
@@ -113,7 +114,7 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
             <div className="startup-agent-heading">
               <AgentAvatar seed="relay-orchestrator" name="Michael" className="startup-agent-avatar" />
               <strong>Michael</strong>
-              <Badge variant="success">Orchestrator Agent</Badge>
+              <Badge>Orchestrator Agent</Badge>
             </div>
             <div className="startup-engine-grid">
               <div className="startup-select-field">
@@ -161,9 +162,9 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
             </div>
           </div>
 
-          {error && <div className="startup-error" role="alert">{error}</div>}
+          {error && <Alert variant="destructive" className="startup-error"><AlertDescription>{error}</AlertDescription></Alert>}
           {availableProviders.length === 0 && !error && (
-            <div className="startup-error" role="alert">Install Claude or Codex CLI.</div>
+            <Alert variant="destructive" className="startup-error"><AlertDescription>Install Claude or Codex CLI.</AlertDescription></Alert>
           )}
         </CardContent>
 

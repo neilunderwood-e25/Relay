@@ -1,20 +1,31 @@
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, realpathSync, renameSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
 import type { Logger } from 'pino';
 import type {
+  ActivityListRequest,
   AppSnapshot,
   OrchestratorRenameRequest,
   OrchestrationCreateRequest,
+  OrchestrationReviewRequest,
+  OrchestrationRunRequest,
   OrchestrationTaskRequest,
+  OrchestrationVerifyRequest,
+  PreferencesUpdateRequest,
+  RelayPreferences,
+  RuntimeDiagnostics,
   TerminalSpawnRequest,
   WorkspaceConfig,
   WorkspaceConfigureRequest,
   WorktreeCreateRequest,
   WorktreeRemoveRequest
 } from '../shared/contracts';
-import { DEFAULT_ORCHESTRATOR_NAME, PROVIDER_IDS, type ProviderId } from '../shared/contracts';
+import {
+  DEFAULT_ORCHESTRATOR_NAME,
+  PROVIDER_IDS,
+  type ProviderId
+} from '../shared/contracts';
 import { IPC } from '../shared/ipc';
 import {
   DEFAULT_ORCHESTRATOR_PROVIDER,
@@ -27,6 +38,7 @@ import { createAppLogger } from './logger';
 import { RehanOrchestrator } from './orchestrator';
 import { detectProviders } from './providers';
 import { PtyManager } from './pty';
+import { normalizePreferences } from './preferences';
 import { WorktreeManager } from './worktrees';
 
 app.setName('Relay');
@@ -42,6 +54,7 @@ const EMPTY_WORKSPACE: WorkspaceConfig = {
 
 let mainWindow: BrowserWindow | null = null;
 let logger: Logger | null = null;
+let relayLogPath = '';
 let configStore: WorkspaceConfigStore | null = null;
 let workspaceConfig: WorkspaceConfig = { ...EMPTY_WORKSPACE };
 let database: RelayDatabase | null = null;
@@ -103,7 +116,30 @@ async function buildAppSnapshot(): Promise<AppSnapshot> {
       agentPath: home ? join(home, 'hive', 'agents', 'orchestrator') : ''
     },
     workspace: { ...workspaceConfig },
+    preferences: readPreferences(),
     providers: await detectProviders()
+  };
+}
+
+function readPreferences(): RelayPreferences {
+  const stored = database?.getValue<Partial<RelayPreferences>>('preferences');
+  return normalizePreferences(stored);
+}
+
+async function buildDiagnostics(): Promise<RuntimeDiagnostics> {
+  if (!database || !workspaceConfig.projectPath) throw new Error('Finish setup first.');
+  const repository = await worktreeManager?.inspect(workspaceConfig.projectPath);
+  const runs = database.listOrchestrations(repository?.mainRoot ?? workspaceConfig.projectPath);
+  return {
+    uptimeMs: Math.round(process.uptime() * 1000),
+    activeTerminals: ptyManager?.list().filter((terminal) => terminal.status !== 'exited').length ?? 0,
+    runningOrchestrations: runs.filter(({ run }) => ['queued', 'running', 'stopping'].includes(run.status)).length,
+    managedWorktrees: repository?.worktrees.filter((worktree) => worktree.managed && !worktree.isMain).length ?? 0,
+    missingWorktrees: repository?.worktrees.filter((worktree) => worktree.status === 'missing').length ?? 0,
+    activityEvents: database.countEvents(),
+    databasePath: database.health().path,
+    hivePath: hive?.health().path ?? '',
+    logPath: relayLogPath
   };
 }
 
@@ -216,6 +252,10 @@ function isNestedPath(parent: string, candidate: string): boolean {
   return nested.length > 0 && !nested.startsWith('..') && !isAbsolute(nested);
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function migrateLegacyDatabase(harnessHome: string): string {
   const path = join(harnessHome, 'relay.db');
   const legacyPath = join(harnessHome, 'foundry.db');
@@ -269,6 +309,11 @@ function registerIpcHandlers(): void {
     try {
       bootstrapWorkspace(nextConfig);
       workspaceConfig = configStore?.write(nextConfig) ?? nextConfig;
+      database?.appendEvent('app.workspace.configured', {
+        projectPath: nextConfig.projectPath,
+        orchestratorProvider: nextConfig.orchestratorProvider,
+        orchestratorModel: nextConfig.orchestratorModel
+      });
     } catch (error) {
       workspaceConfig = previousConfig;
       throw error;
@@ -284,6 +329,7 @@ function registerIpcHandlers(): void {
     workspaceConfig = configStore?.write({ ...workspaceConfig, orchestratorName: name })
       ?? { ...workspaceConfig, orchestratorName: name };
     hive?.renameOrchestrator(name);
+    database?.appendEvent('app.orchestrator.renamed', { name });
     return buildAppSnapshot();
   });
   ipcMain.handle(IPC.repositoryInspect, (_event, directory: unknown) => {
@@ -324,10 +370,69 @@ function registerIpcHandlers(): void {
     }
     return rehan.retry(request);
   });
+  ipcMain.handle(IPC.orchestrationTaskDiff, (_event, request: OrchestrationTaskRequest) => {
+    if (!rehan || !request || typeof request.taskId !== 'string') throw new Error('Invalid task diff request.');
+    return rehan.diff(request);
+  });
+  ipcMain.handle(IPC.orchestrationTaskReview, (_event, request: OrchestrationReviewRequest) => {
+    if (!rehan || !request || typeof request.taskId !== 'string') throw new Error('Invalid task review request.');
+    return rehan.review(request);
+  });
+  ipcMain.handle(IPC.orchestrationIntegrate, (_event, request: OrchestrationRunRequest) => {
+    if (!rehan || !request || typeof request.runId !== 'string') throw new Error('Invalid integration request.');
+    return rehan.integrate(request);
+  });
+  ipcMain.handle(IPC.orchestrationVerify, (_event, request: OrchestrationVerifyRequest) => {
+    if (!rehan || !request || typeof request.runId !== 'string') throw new Error('Invalid verification request.');
+    return rehan.verify(request);
+  });
+  ipcMain.handle(IPC.orchestrationCleanup, (_event, request: OrchestrationRunRequest) => {
+    if (!rehan || !request || typeof request.runId !== 'string') throw new Error('Invalid cleanup request.');
+    return rehan.cleanup(request);
+  });
+  ipcMain.handle(IPC.activityList, (_event, request: ActivityListRequest | undefined) => {
+    if (!database) throw new Error('Finish setup first.');
+    if (request !== undefined && (!request || typeof request !== 'object')) {
+      throw new Error('Invalid activity request.');
+    }
+    return database.listEvents(request);
+  });
+  ipcMain.handle(IPC.preferencesUpdate, (_event, request: PreferencesUpdateRequest) => {
+    if (!database || !request || typeof request !== 'object') throw new Error('Finish setup first.');
+    const preferences = normalizePreferences(request);
+    database.setValue('preferences', preferences);
+    database.appendEvent('app.preferences.updated', preferences);
+    return preferences;
+  });
+  ipcMain.handle(IPC.diagnosticsGet, () => buildDiagnostics());
+  ipcMain.handle(IPC.operationsRecover, async () => {
+    if (!database || !hive || !workspaceConfig.projectPath) {
+      return { ok: false, recoveredItems: 0, missingWorktrees: 0, error: 'Finish setup first.' };
+    }
+    try {
+      const recoveredItems = database.recoverInterruptedOrchestrations();
+      const health = hive.ensure();
+      if (!health.ready) throw new Error(health.error ?? 'Unable to repair the hive.');
+      hive.syncOrchestrations(database.listOrchestrations());
+      const repository = await worktreeManager?.inspect(workspaceConfig.projectPath);
+      const missingWorktrees = repository?.worktrees.filter((worktree) => worktree.status === 'missing').length ?? 0;
+      database.appendEvent('app.recovery.completed', { recoveredItems, missingWorktrees });
+      return { ok: true, recoveredItems, missingWorktrees };
+    } catch (error) {
+      return { ok: false, recoveredItems: 0, missingWorktrees: 0, error: errorMessage(error) };
+    }
+  });
   ipcMain.handle(IPC.terminalsList, () => ptyManager?.list() ?? []);
-  ipcMain.handle(IPC.terminalSpawn, (_event, request: TerminalSpawnRequest) => {
+  ipcMain.handle(IPC.terminalSpawn, async (_event, request: TerminalSpawnRequest) => {
     if (!ptyManager) throw new Error('Terminal supervisor is not ready.');
-    return ptyManager.spawn(request);
+    const terminal = await ptyManager.spawn(request);
+    database?.appendEvent('terminal.started', {
+      terminalId: terminal.id,
+      provider: terminal.provider,
+      role: terminal.role ?? 'worker',
+      cwd: terminal.cwd
+    });
+    return terminal;
   });
   ipcMain.handle(IPC.terminalReplay, (_event, id: unknown) => {
     if (!ptyManager || typeof id !== 'string') throw new Error('Invalid terminal id.');
@@ -360,9 +465,17 @@ function registerIpcHandlers(): void {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'darwin' && !app.isPackaged) {
+    const developmentIcon = nativeImage.createFromPath(
+      resolve(process.cwd(), 'build/relay-app-icon.png')
+    );
+    if (!developmentIcon.isEmpty()) app.dock?.setIcon(developmentIcon);
+  }
+
   const appData = app.getPath('userData');
   const appLogger = createAppLogger(join(appData, 'logs'));
   logger = appLogger.logger;
+  relayLogPath = appLogger.logPath;
   configStore = new WorkspaceConfigStore(applicationConfigPath(appData));
   workspaceConfig = configStore.read();
   ptyManager = new PtyManager({
@@ -373,6 +486,11 @@ app.whenReady().then(() => {
     },
     onExit: (event) => {
       rehan?.handleTerminalExit(event);
+      database?.appendEvent('terminal.finished', {
+        terminalId: event.id,
+        exitCode: event.exitCode,
+        signal: event.signal
+      });
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.terminalExit, event);
     }
   });

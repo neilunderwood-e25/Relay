@@ -40,6 +40,18 @@ export interface WorkspaceConfig {
   orchestratorModel: string | null;
 }
 
+export interface RelayPreferences {
+  defaultStrategy: OrchestrationStrategy;
+  maxConcurrentAgents: number;
+  verificationProvider: ProviderId | null;
+}
+
+export const DEFAULT_RELAY_PREFERENCES: RelayPreferences = {
+  defaultStrategy: 'balanced',
+  maxConcurrentAgents: 2,
+  verificationProvider: null
+};
+
 export interface AppSnapshot {
   appName: string;
   appVersion: string;
@@ -49,7 +61,54 @@ export interface AppSnapshot {
   database: DatabaseHealth;
   hive: HiveHealth;
   workspace: WorkspaceConfig;
+  preferences: RelayPreferences;
   providers: ProviderCapability[];
+}
+
+export type ActivityCategory = 'all' | 'orchestration' | 'worktree' | 'terminal' | 'system';
+
+export interface ActivityEvent {
+  id: number;
+  occurredAt: number;
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+export interface ActivityListRequest {
+  category?: ActivityCategory;
+  beforeId?: number;
+  limit?: number;
+}
+
+export interface ActivityPage {
+  events: ActivityEvent[];
+  hasMore: boolean;
+  nextBeforeId?: number;
+}
+
+export interface PreferencesUpdateRequest {
+  defaultStrategy: OrchestrationStrategy;
+  maxConcurrentAgents: number;
+  verificationProvider: ProviderId | null;
+}
+
+export interface RuntimeDiagnostics {
+  uptimeMs: number;
+  activeTerminals: number;
+  runningOrchestrations: number;
+  managedWorktrees: number;
+  missingWorktrees: number;
+  activityEvents: number;
+  databasePath: string;
+  hivePath: string;
+  logPath: string;
+}
+
+export interface RecoveryResult {
+  ok: boolean;
+  recoveredItems: number;
+  missingWorktrees: number;
+  error?: string;
 }
 
 export type TerminalStatus = 'starting' | 'running' | 'stopping' | 'exited';
@@ -188,6 +247,11 @@ export type OrchestrationTaskStatus =
   | 'completed'
   | 'stopped';
 
+export type OrchestrationReviewStatus = 'pending' | 'accepted' | 'rejected';
+export type TaskIntegrationStatus = 'pending' | 'integrating' | 'integrated' | 'no_changes' | 'conflict' | 'failed';
+export type RunIntegrationStatus = 'pending' | 'reviewing' | 'integrating' | 'integrated' | 'conflict' | 'failed';
+export type VerificationStatus = 'idle' | 'running' | 'passed' | 'failed';
+
 export interface OrchestrationRun {
   id: string;
   objective: string;
@@ -201,6 +265,13 @@ export interface OrchestrationRun {
   startedAt?: number;
   completedAt?: number;
   error?: string;
+  integrationStatus?: RunIntegrationStatus;
+  integrationError?: string;
+  verificationStatus?: VerificationStatus;
+  verificationProvider?: ProviderId;
+  verificationTerminalId?: string;
+  verificationSummary?: string;
+  verificationError?: string;
 }
 
 export interface OrchestrationTask {
@@ -224,6 +295,12 @@ export interface OrchestrationTask {
   updatedAt: number;
   startedAt?: number;
   completedAt?: number;
+  reviewStatus?: OrchestrationReviewStatus;
+  integrationStatus?: TaskIntegrationStatus;
+  integrationCommit?: string;
+  integrationError?: string;
+  reviewedAt?: number;
+  integratedAt?: number;
 }
 
 export interface OrchestrationSnapshot {
@@ -244,6 +321,45 @@ export interface OrchestrationTaskRequest {
   taskId: string;
 }
 
+export interface OrchestrationReviewRequest extends OrchestrationTaskRequest {
+  decision: Exclude<OrchestrationReviewStatus, 'pending'>;
+}
+
+export interface OrchestrationRunRequest {
+  runId: string;
+}
+
+export interface OrchestrationVerifyRequest extends OrchestrationRunRequest {
+  provider?: ProviderId;
+}
+
+export type DiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'unknown';
+
+export interface TaskDiffFile {
+  path: string;
+  status: DiffFileStatus;
+  additions: number;
+  deletions: number;
+}
+
+export interface TaskDiffSnapshot {
+  taskId: string;
+  branch: string;
+  baseBranch: string;
+  files: TaskDiffFile[];
+  additions: number;
+  deletions: number;
+  patch: string;
+  truncated: boolean;
+}
+
+export interface WorktreeIntegrationResult {
+  status: 'integrated' | 'no_changes' | 'conflict';
+  commit?: string;
+  conflicts?: string[];
+  error?: string;
+}
+
 export type Unsubscribe = () => void;
 
 export interface RelayApi {
@@ -259,6 +375,15 @@ export interface RelayApi {
   createOrchestration(request: OrchestrationCreateRequest): Promise<OrchestrationSnapshot>;
   stopOrchestration(runId: string): Promise<OperationResult>;
   retryOrchestrationTask(request: OrchestrationTaskRequest): Promise<OperationResult>;
+  getOrchestrationTaskDiff(request: OrchestrationTaskRequest): Promise<TaskDiffSnapshot>;
+  reviewOrchestrationTask(request: OrchestrationReviewRequest): Promise<OrchestrationSnapshot>;
+  integrateOrchestration(request: OrchestrationRunRequest): Promise<OrchestrationSnapshot>;
+  verifyOrchestration(request: OrchestrationVerifyRequest): Promise<OrchestrationSnapshot>;
+  cleanupOrchestration(request: OrchestrationRunRequest): Promise<OrchestrationSnapshot>;
+  listActivity(request?: ActivityListRequest): Promise<ActivityPage>;
+  updatePreferences(request: PreferencesUpdateRequest): Promise<RelayPreferences>;
+  getDiagnostics(): Promise<RuntimeDiagnostics>;
+  recoverOperations(): Promise<RecoveryResult>;
   listTerminals(): Promise<TerminalSnapshot[]>;
   spawnTerminal(request: TerminalSpawnRequest): Promise<TerminalSnapshot>;
   getTerminalReplay(id: string): Promise<TerminalReplay>;

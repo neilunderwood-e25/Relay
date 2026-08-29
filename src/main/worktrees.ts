@@ -6,7 +6,10 @@ import type { Logger } from 'pino';
 import type {
   OperationResult,
   RepositorySnapshot,
+  TaskDiffFile,
+  TaskDiffSnapshot,
   WorktreeCreateRequest,
+  WorktreeIntegrationResult,
   WorktreeRecord,
   WorktreeRemoveRequest,
   WorktreeSnapshot
@@ -16,6 +19,8 @@ import type { RelayDatabase } from './database';
 const MAX_GIT_OUTPUT = 2 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 20_000;
 const WORKTREE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/;
+const MAX_PATCH_OUTPUT = 512 * 1024;
+const MAX_UNTRACKED_DIFFS = 100;
 
 interface GitResult {
   ok: boolean;
@@ -116,6 +121,53 @@ export class WorktreeManager {
 
   remove(request: WorktreeRemoveRequest): Promise<OperationResult> {
     return this.serialize(() => this.removeNow(request));
+  }
+
+  async diff(worktreeId: string, taskId: string): Promise<TaskDiffSnapshot> {
+    const record = this.requireManagedWorktree(worktreeId);
+    const pathInfo = await stat(record.path).catch(() => null);
+    if (!pathInfo?.isDirectory()) throw new Error('The task worktree is missing.');
+
+    const mergeBase = await this.mergeBase(record);
+    const [patchResult, numstatResult, statusResult, untrackedResult] = await Promise.all([
+      runGit(record.path, ['diff', '--no-ext-diff', '--find-renames', '--src-prefix=a/', '--dst-prefix=b/', mergeBase, '--']),
+      runGit(record.path, ['diff', '--numstat', '--find-renames', mergeBase, '--']),
+      runGit(record.path, ['diff', '--name-status', '--find-renames', mergeBase, '--']),
+      runGit(record.path, ['ls-files', '--others', '--exclude-standard', '-z'])
+    ]);
+    if (!patchResult.ok || !numstatResult.ok || !statusResult.ok || !untrackedResult.ok) {
+      throw new Error(gitError([patchResult, numstatResult, statusResult, untrackedResult].find((result) => !result.ok)!));
+    }
+
+    const statusByPath = parseNameStatuses(statusResult.stdout);
+    const tracked = parseNumstat(numstatResult.stdout, statusByPath);
+    const allUntrackedPaths = untrackedResult.stdout.split('\0').filter(Boolean);
+    const untrackedPaths = allUntrackedPaths.slice(0, MAX_UNTRACKED_DIFFS);
+    const untracked = await Promise.all(untrackedPaths.map(async (path): Promise<{ file: TaskDiffFile; patch: string }> => {
+      const result = await runGit(record.path, ['diff', '--no-index', '--', '/dev/null', path]);
+      const additions = result.stdout.split(/\r?\n/).filter((line) => line.startsWith('+') && !line.startsWith('+++')).length;
+      return {
+        file: { path, status: 'added', additions, deletions: 0 },
+        patch: result.stdout
+      };
+    }));
+
+    const files = [...tracked.files, ...untracked.map(({ file }) => file)];
+    const fullPatch = [patchResult.stdout, ...untracked.map(({ patch }) => patch)].filter(Boolean).join('\n');
+    return {
+      taskId,
+      branch: record.branch,
+      baseBranch: record.baseBranch,
+      files,
+      additions: files.reduce((total, file) => total + file.additions, 0),
+      deletions: files.reduce((total, file) => total + file.deletions, 0),
+      patch: fullPatch.slice(0, MAX_PATCH_OUTPUT),
+      truncated: fullPatch.length > MAX_PATCH_OUTPUT || allUntrackedPaths.length > MAX_UNTRACKED_DIFFS
+    };
+  }
+
+  integrate(worktreeId: string, commitMessage: string): Promise<WorktreeIntegrationResult> {
+    return this.serialize(() => this.integrateNow(worktreeId, commitMessage));
   }
 
   private async createNow(request: WorktreeCreateRequest): Promise<WorktreeSnapshot> {
@@ -229,6 +281,76 @@ export class WorktreeManager {
     return { ok: true };
   }
 
+  private async integrateNow(worktreeId: string, commitMessage: string): Promise<WorktreeIntegrationResult> {
+    const record = this.requireManagedWorktree(worktreeId);
+    const pathInfo = await stat(record.path).catch(() => null);
+    if (!pathInfo?.isDirectory()) throw new Error('The task worktree is missing.');
+
+    const [mainBranch, mainStatus, sourceStatus, preHead] = await Promise.all([
+      runGit(record.repoRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD']),
+      runGit(record.repoRoot, ['status', '--porcelain', '--untracked-files=all']),
+      runGit(record.path, ['status', '--porcelain', '--untracked-files=all']),
+      runGit(record.repoRoot, ['rev-parse', 'HEAD'])
+    ]);
+    if (!mainBranch.ok || mainBranch.stdout.trim() !== record.baseBranch) {
+      throw new Error(`Check out ${record.baseBranch} in the project before integrating.`);
+    }
+    if (!mainStatus.ok) throw new Error('Could not verify the project checkout.');
+    if (mainStatus.stdout.trim()) throw new Error('The project checkout has uncommitted changes.');
+    if (!sourceStatus.ok || !preHead.ok) throw new Error('Could not verify the task worktree.');
+
+    const mergeBase = await this.mergeBase(record);
+    if (sourceStatus.stdout.trim()) {
+      const add = await runGit(record.path, ['add', '-A']);
+      if (!add.ok) throw new Error(gitError(add));
+      const commit = await runGit(record.path, [
+        '-c', 'user.name=Relay Integration',
+        '-c', 'user.email=relay@localhost',
+        'commit', '--no-gpg-sign', '-m', commitMessage
+      ]);
+      if (!commit.ok) {
+        await runGit(record.path, ['reset']);
+        throw new Error(gitError(commit));
+      }
+    }
+
+    const commitsResult = await runGit(record.path, ['rev-list', '--reverse', `${mergeBase}..${record.branch}`]);
+    if (!commitsResult.ok) throw new Error(gitError(commitsResult));
+    const commits = commitsResult.stdout.split(/\r?\n/).filter(Boolean);
+    if (commits.length === 0) return { status: 'no_changes' };
+
+    const cherryPick = await runGit(record.repoRoot, ['cherry-pick', '--no-commit', ...commits], 60_000);
+    if (!cherryPick.ok) {
+      const conflictsResult = await runGit(record.repoRoot, ['diff', '--name-only', '--diff-filter=U']);
+      const conflicts = conflictsResult.stdout.split(/\r?\n/).filter(Boolean);
+      await runGit(record.repoRoot, ['cherry-pick', '--abort']);
+      await runGit(record.repoRoot, ['reset', '--merge', preHead.stdout.trim()]);
+      return {
+        status: 'conflict',
+        conflicts,
+        error: conflicts.length > 0 ? `Conflicts in ${conflicts.join(', ')}` : gitError(cherryPick)
+      };
+    }
+
+    const commit = await runGit(record.repoRoot, [
+      '-c', 'user.name=Relay Integration',
+      '-c', 'user.email=relay@localhost',
+      'commit', '--no-gpg-sign', '-m', commitMessage
+    ]);
+    if (!commit.ok) {
+      await runGit(record.repoRoot, ['reset', '--merge', preHead.stdout.trim()]);
+      throw new Error(gitError(commit));
+    }
+    const integratedHead = await runGit(record.repoRoot, ['rev-parse', 'HEAD']);
+    if (!integratedHead.ok) throw new Error(gitError(integratedHead));
+    this.options.database.appendEvent('worktree.integrated', {
+      worktreeId,
+      branch: record.branch,
+      commit: integratedHead.stdout.trim()
+    });
+    return { status: 'integrated', commit: integratedHead.stdout.trim() };
+  }
+
   private async snapshotWorktree(
     worktree: PorcelainWorktree,
     mainRoot: string,
@@ -266,6 +388,22 @@ export class WorktreeManager {
     const next = this.mutationTail.then(operation, operation);
     this.mutationTail = next.then(() => undefined, () => undefined);
     return next;
+  }
+
+  private requireManagedWorktree(id: string): WorktreeRecord {
+    if (typeof id !== 'string') throw new Error('Invalid worktree id.');
+    const record = this.options.database.getWorktree(id);
+    if (!record) throw new Error('Managed worktree was not found.');
+    if (!isWithin(this.storageRoot, resolve(record.path))) {
+      throw new Error('Refusing to access a path outside managed storage.');
+    }
+    return record;
+  }
+
+  private async mergeBase(record: WorktreeRecord): Promise<string> {
+    const result = await runGit(record.path, ['merge-base', record.branch, record.baseBranch]);
+    if (!result.ok || !result.stdout.trim()) throw new Error('Could not resolve the task base commit.');
+    return result.stdout.trim();
   }
 }
 
@@ -346,6 +484,42 @@ function shortHash(value: string): string {
 
 function gitError(result: GitResult): string {
   return result.stderr.trim() || result.stdout.trim() || `Git exited with code ${result.code ?? 'unknown'}.`;
+}
+
+function parseNameStatuses(output: string): Map<string, TaskDiffFile['status']> {
+  const statuses = new Map<string, TaskDiffFile['status']>();
+  for (const line of output.split(/\r?\n/).filter(Boolean)) {
+    const [rawStatus, ...paths] = line.split('\t');
+    const path = paths.at(-1);
+    if (!path) continue;
+    const code = rawStatus.charAt(0);
+    statuses.set(path, code === 'A' ? 'added'
+      : code === 'M' ? 'modified'
+        : code === 'D' ? 'deleted'
+          : code === 'R' ? 'renamed'
+            : code === 'C' ? 'copied'
+              : 'unknown');
+  }
+  return statuses;
+}
+
+function parseNumstat(output: string, statuses: Map<string, TaskDiffFile['status']>): {
+  files: TaskDiffFile[];
+} {
+  const files = output.split(/\r?\n/).filter(Boolean).map((line): TaskDiffFile => {
+    const [rawAdditions, rawDeletions, ...pathParts] = line.split('\t');
+    const path = pathParts.at(-1) ?? '(unknown)';
+    return {
+      path,
+      status: statuses.get(path) ?? 'modified',
+      additions: Number.parseInt(rawAdditions, 10) || 0,
+      deletions: Number.parseInt(rawDeletions, 10) || 0
+    };
+  });
+  for (const [path, status] of statuses) {
+    if (!files.some((file) => file.path === path)) files.push({ path, status, additions: 0, deletions: 0 });
+  }
+  return { files };
 }
 
 function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
