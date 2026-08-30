@@ -89,6 +89,8 @@ describe('renderer design-system contract', () => {
     expect(settings).toContain('window.relay.recoverOperations');
     expect(worktrees).toContain('if (value) setBaseBranch(value)');
     expect(worktrees).toContain("{baseBranch || 'No commits'}");
+    expect(worktrees).toContain('window.relay.openIdeWorkspace');
+    expect(worktrees).toContain('aria-label="Open IDE workspace"');
   });
 
   it('retains compact-window layout rules without crushing terminal controls', () => {

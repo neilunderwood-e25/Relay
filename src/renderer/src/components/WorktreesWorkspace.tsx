@@ -4,6 +4,7 @@ import {
   Alert02Icon,
   ChatGptIcon,
   ClaudeIcon,
+  CodeFolderIcon,
   Delete02Icon,
   FolderOpenIcon,
   GitBranchIcon,
@@ -104,6 +105,19 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
     }
   };
 
+  const openIde = async (): Promise<void> => {
+    setBusy('ide');
+    setError(null);
+    try {
+      const result = await window.relay.openIdeWorkspace(repository?.mainRoot ?? cwd);
+      if (!result.ok) throw new Error(result.error ?? 'Could not open the IDE workspace.');
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const worktreeCount = repository?.worktrees.filter((worktree) => !worktree.isMain).length ?? 0;
 
   return (
@@ -114,6 +128,17 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
           <Badge variant={worktreeCount > 0 ? 'default' : 'secondary'}>{worktreeCount}</Badge>
         </div>
         <div className="worker-actions">
+          <Tooltip content="Open IDE">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Open IDE workspace"
+              disabled={loading || !repository?.isRepository || busy !== null}
+              onClick={() => void openIde()}
+            >
+              <Icon icon={CodeFolderIcon} size={16} />
+            </Button>
+          </Tooltip>
           <Tooltip content="Choose project">
             <Button variant="ghost" size="icon" aria-label="Choose project" onClick={onChooseDirectory}>
               <Icon icon={FolderOpenIcon} size={16} />

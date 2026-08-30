@@ -72,9 +72,38 @@ describe('WorktreeManager', () => {
     expect(database.getWorktree(created.id)?.path).toBe(created.path);
     expect(git(repo, 'status', '--porcelain')).toBe('');
     expect(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8')).toContain('/.relay/worktrees/');
+    expect(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8')).toContain('/.vscode/settings.json');
+    expect(JSON.parse(readFileSync(join(repo, '.vscode', 'settings.json'), 'utf8'))).toMatchObject({
+      'git.detectWorktrees': true,
+      'scm.alwaysShowRepositories': true
+    });
+    expect(JSON.parse(readFileSync(join(repo, '.relay', 'Relay.code-workspace'), 'utf8'))).toMatchObject({
+      folders: [
+        { name: 'Main · main', path: '..' },
+        { name: 'relay/worker-one', path: 'worktrees/worker-one' }
+      ]
+    });
 
     const refreshed = await manager.inspect(repo);
     expect(refreshed.worktrees.some((worktree) => worktree.id === created.id)).toBe(true);
+    database.close();
+  });
+
+  it('preserves existing VS Code settings while maintaining the Relay workspace', async () => {
+    const { repo, database, manager } = fixture();
+    mkdirSync(join(repo, '.vscode'));
+    writeFileSync(join(repo, '.vscode', 'settings.json'), '{\n  "editor.fontSize": 15\n}\n');
+    git(repo, 'add', '.vscode/settings.json');
+    git(repo, 'commit', '-m', 'Add editor settings');
+
+    await manager.create({ repoPath: repo, name: 'settings-safe' });
+
+    expect(readFileSync(join(repo, '.vscode', 'settings.json'), 'utf8'))
+      .toBe('{\n  "editor.fontSize": 15\n}\n');
+    expect(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8'))
+      .not.toContain('/.vscode/settings.json');
+    expect(existsSync(join(repo, '.relay', 'Relay.code-workspace'))).toBe(true);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
     database.close();
   });
 

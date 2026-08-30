@@ -20,6 +20,7 @@ const api: RelayApi = {
   inspectRepository: (directory) => ipcRenderer.invoke(IPC.repositoryInspect, directory),
   createWorktree: (request) => ipcRenderer.invoke(IPC.worktreeCreate, request),
   removeWorktree: (request) => ipcRenderer.invoke(IPC.worktreeRemove, request),
+  openIdeWorkspace: (repoPath) => ipcRenderer.invoke(IPC.ideWorkspaceOpen, repoPath),
   listOrchestrations: (repoRoot) => ipcRenderer.invoke(IPC.orchestrationsList, repoRoot),
   createOrchestration: (request) => ipcRenderer.invoke(IPC.orchestrationCreate, request),
   replanOrchestration: (request) => ipcRenderer.invoke(IPC.orchestrationReplan, request),

@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
-import { appendFile, mkdir, readFile, realpath, stat } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Logger } from 'pino';
 import type {
   OperationResult,
+  IdeWorkspaceOpenResult,
   RepositorySnapshot,
   TaskDiffFile,
   TaskDiffSnapshot,
@@ -16,12 +17,16 @@ import type {
   WorktreeSnapshot
 } from '../shared/contracts';
 import type { RelayDatabase } from './database';
+import { resolveExecutable } from './providers';
 
 const MAX_GIT_OUTPUT = 2 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 20_000;
 const WORKTREE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/;
 const MAX_PATCH_OUTPUT = 512 * 1024;
 const MAX_UNTRACKED_DIFFS = 100;
+const IDE_WORKSPACE_NAME = 'Relay.code-workspace';
+const RELAY_WORKTREE_SETTING = '/.vscode/settings.json';
+const RELAY_WORKSPACE_EXCLUDE = `/.relay/${IDE_WORKSPACE_NAME}`;
 
 interface GitResult {
   ok: boolean;
@@ -122,6 +127,64 @@ export class WorktreeManager {
 
   remove(request: WorktreeRemoveRequest): Promise<OperationResult> {
     return this.serialize(() => this.removeNow(request));
+  }
+
+  async prepareIdeWorkspace(directory: string): Promise<string> {
+    const repository = await this.inspect(directory);
+    if (!repository.isRepository || !repository.mainRoot) {
+      throw new Error(repository.error ?? 'Choose a Git repository first.');
+    }
+
+    const repositoryRoot = await realpath(repository.mainRoot);
+    const relayDirectory = resolve(repositoryRoot, '.relay');
+    await mkdir(relayDirectory, { recursive: true });
+    if (await realpath(relayDirectory) !== resolve(repositoryRoot, '.relay')) {
+      throw new Error('Refusing an IDE workspace folder that resolves outside the project.');
+    }
+
+    const projectWorktrees = repository.worktrees.filter((worktree) =>
+      !worktree.isMain
+      && worktree.status !== 'missing'
+      && isWithin(resolve(repositoryRoot, '.relay', 'worktrees'), resolve(worktree.path))
+    );
+    const folders = [
+      { name: `Main · ${repository.currentBranch ?? 'detached'}`, path: '..' },
+      ...projectWorktrees.map((worktree) => ({
+        name: worktree.branch,
+        path: relative(relayDirectory, worktree.path)
+      }))
+    ];
+    const workspacePath = resolve(relayDirectory, IDE_WORKSPACE_NAME);
+    await writeFile(workspacePath, `${JSON.stringify({
+      folders,
+      settings: ideWorktreeSettings()
+    }, null, 2)}\n`, 'utf8');
+
+    const settingsCreated = await this.ensureFolderWorktreeSettings(repositoryRoot);
+    await this.ensureProjectLocalExcludes(repositoryRoot, [
+      '/.relay/worktrees/',
+      RELAY_WORKSPACE_EXCLUDE,
+      ...(settingsCreated ? [RELAY_WORKTREE_SETTING] : [])
+    ]);
+    return workspacePath;
+  }
+
+  async openIdeWorkspace(directory: string): Promise<IdeWorkspaceOpenResult> {
+    try {
+      const workspacePath = await this.prepareIdeWorkspace(directory);
+      const resolved = await resolveIde();
+      if (!resolved) {
+        return { ok: false, error: 'Install Cursor or Visual Studio Code, or add its CLI to PATH.' };
+      }
+      await launchDetached(resolved.executable, ['--new-window', workspacePath]);
+      this.options.database.appendEvent('ide.workspace.opened', {
+        ide: resolved.ide,
+        workspacePath
+      });
+      return { ok: true, ide: resolved.ide, workspacePath };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   async diff(worktreeId: string, taskId: string): Promise<TaskDiffSnapshot> {
@@ -247,6 +310,11 @@ export class WorktreeManager {
       status: 'ready'
     };
     this.options.logger.info({ worktreeId: record.id, branch, path: worktreePath }, 'Worktree created');
+    try {
+      await this.prepareIdeWorkspace(repository.mainRoot);
+    } catch (error) {
+      this.options.logger.warn({ error }, 'Could not refresh the IDE workspace');
+    }
     return snapshot;
   }
 
@@ -455,20 +523,50 @@ export class WorktreeManager {
   }
 
   private async ensureProjectWorktreeIgnore(repoRoot: string): Promise<void> {
+    await this.ensureProjectLocalExcludes(repoRoot, ['/.relay/worktrees/']);
+  }
+
+  private async ensureProjectLocalExcludes(repoRoot: string, patterns: string[]): Promise<void> {
     const result = await runGit(repoRoot, [
       'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'
     ]);
     if (!result.ok || !result.stdout.trim()) throw new Error('Could not locate the local Git exclude file.');
     const excludePath = resolve(result.stdout.trim());
-    const pattern = '/.relay/worktrees/';
     const current = await readFile(excludePath, 'utf8').catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return '';
       throw error;
     });
-    if (current.split(/\r?\n/).some((line) => line.trim() === pattern)) return;
+    const currentPatterns = new Set(current.split(/\r?\n/).map((line) => line.trim()));
+    const missing = patterns.filter((pattern) => !currentPatterns.has(pattern));
+    if (missing.length === 0) return;
     await mkdir(dirname(excludePath), { recursive: true });
     const prefix = current.length > 0 && !current.endsWith('\n') ? '\n' : '';
-    await appendFile(excludePath, `${prefix}# Relay managed worktrees\n${pattern}\n`, 'utf8');
+    await appendFile(excludePath, `${prefix}# Relay IDE integration\n${missing.join('\n')}\n`, 'utf8');
+  }
+
+  private async ensureFolderWorktreeSettings(repoRoot: string): Promise<boolean> {
+    const vscodeDirectory = resolve(repoRoot, '.vscode');
+    const settingsPath = resolve(vscodeDirectory, 'settings.json');
+    if (existsSync(settingsPath)) {
+      const current = await readFile(settingsPath, 'utf8').catch(() => '');
+      try {
+        const parsed = JSON.parse(current) as Record<string, unknown>;
+        const expected = ideWorktreeSettings();
+        return Object.keys(parsed).length === Object.keys(expected).length
+          && Object.entries(expected).every(([key, value]) => parsed[key] === value);
+      } catch {
+        return false;
+      }
+    }
+    await mkdir(vscodeDirectory, { recursive: true });
+    if (await realpath(vscodeDirectory) !== resolve(repoRoot, '.vscode')) return false;
+    await writeFile(settingsPath, `${JSON.stringify(ideWorktreeSettings(), null, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx'
+    }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EEXIST') throw error;
+    });
+    return true;
   }
 
   private async mergeBase(record: WorktreeRecord): Promise<string> {
@@ -596,6 +694,49 @@ function parseNumstat(output: string, statuses: Map<string, TaskDiffFile['status
     if (!files.some((file) => file.path === path)) files.push({ path, status, additions: 0, deletions: 0 });
   }
   return { files };
+}
+
+function ideWorktreeSettings(): Record<string, boolean | number | string> {
+  return {
+    'git.detectWorktrees': true,
+    'git.detectWorktreesLimit': 50,
+    'git.autoRepositoryDetection': true,
+    'scm.alwaysShowRepositories': true,
+    'scm.repositories.selectionMode': 'multiple'
+  };
+}
+
+async function resolveIde(): Promise<{ ide: 'cursor' | 'vscode'; executable: string } | null> {
+  const candidates: Array<{ ide: 'cursor' | 'vscode'; command: string }> = [
+    { ide: 'cursor', command: 'cursor' },
+    { ide: 'vscode', command: 'code' }
+  ];
+  if (process.platform === 'darwin') {
+    candidates.push(
+      { ide: 'cursor', command: '/Applications/Cursor.app/Contents/Resources/app/bin/cursor' },
+      { ide: 'vscode', command: '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' }
+    );
+  }
+  for (const candidate of candidates) {
+    const executable = await resolveExecutable(candidate.command);
+    if (executable) return { ide: candidate.ide, executable };
+  }
+  return null;
+}
+
+function launchDetached(executable: string, args: string[]): Promise<void> {
+  return new Promise((resolveLaunch, reject) => {
+    const child = spawn(executable, args, {
+      detached: true,
+      shell: false,
+      stdio: 'ignore'
+    });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolveLaunch();
+    });
+  });
 }
 
 function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {

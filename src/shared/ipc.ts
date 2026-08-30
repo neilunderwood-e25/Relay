@@ -11,6 +11,7 @@ export const IPC = {
   repositoryInspect: 'repository:inspect',
   worktreeCreate: 'worktree:create',
   worktreeRemove: 'worktree:remove',
+  ideWorkspaceOpen: 'ide:workspace:open',
   orchestrationsList: 'orchestrations:list',
   orchestrationCreate: 'orchestration:create',
   orchestrationReplan: 'orchestration:replan',

@@ -602,7 +602,17 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(IPC.repositoryInspect, (_event, directory: unknown) => {
     if (!worktreeManager || !safetyBoundary) throw new Error('Worktree manager is not ready.');
-    return worktreeManager.inspect(safetyBoundary.assertProjectPath(directory, 'repository.inspect'));
+    const projectPath = safetyBoundary.assertProjectPath(directory, 'repository.inspect');
+    return worktreeManager.inspect(projectPath).then(async (repository) => {
+      if (repository.isRepository && repository.worktrees.some((worktree) => !worktree.isMain)) {
+        try {
+          await worktreeManager!.prepareIdeWorkspace(projectPath);
+        } catch (error) {
+          logger?.warn({ error, projectPath }, 'Could not refresh the IDE workspace');
+        }
+      }
+      return repository;
+    });
   });
   ipcMain.handle(IPC.worktreeCreate, (_event, request: WorktreeCreateRequest) => {
     if (!worktreeManager || !safetyBoundary || !request || typeof request !== 'object') {
@@ -629,6 +639,13 @@ function registerIpcHandlers(): void {
     );
     if (inUse) return { ok: false, error: 'Stop the worktree terminal first.' };
     return worktreeManager.remove({ ...request, repoPath: safeRepoPath });
+  });
+  ipcMain.handle(IPC.ideWorkspaceOpen, (_event, repoPath: unknown) => {
+    if (!worktreeManager || !safetyBoundary) {
+      return { ok: false, error: 'Worktree manager is not ready.' };
+    }
+    const projectPath = safetyBoundary.assertProjectPath(repoPath, 'ide.workspace.open');
+    return worktreeManager.openIdeWorkspace(projectPath);
   });
   ipcMain.handle(IPC.orchestrationsList, (_event, repoRoot: unknown) => {
     if (!orchestrator || !safetyBoundary) throw new Error('The orchestrator is not ready.');

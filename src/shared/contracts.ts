@@ -338,6 +338,13 @@ export interface OperationResult {
   error?: string;
 }
 
+export type IdeId = 'cursor' | 'vscode';
+
+export interface IdeWorkspaceOpenResult extends OperationResult {
+  ide?: IdeId;
+  workspacePath?: string;
+}
+
 export interface WorktreeRecord {
   id: string;
   repoRoot: string;
@@ -575,6 +582,7 @@ export interface RelayApi {
   inspectRepository(directory: string): Promise<RepositorySnapshot>;
   createWorktree(request: WorktreeCreateRequest): Promise<WorktreeSnapshot>;
   removeWorktree(request: WorktreeRemoveRequest): Promise<OperationResult>;
+  openIdeWorkspace(repoPath: string): Promise<IdeWorkspaceOpenResult>;
   listOrchestrations(repoRoot?: string): Promise<OrchestrationSnapshot[]>;
   createOrchestration(request: OrchestrationCreateRequest): Promise<OrchestrationSnapshot>;
   replanOrchestration(request: OrchestrationReplanRequest): Promise<OrchestrationSnapshot>;
