@@ -13,6 +13,10 @@ interface ProviderDefinition {
 }
 
 const COMMAND_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const MAX_VERSION_OUTPUT = 64 * 1024;
+const PROVIDER_CACHE_MS = 10_000;
+let cachedProviders: { expiresAt: number; value: ProviderCapability[] } | null = null;
+let providerDiscovery: Promise<ProviderCapability[]> | null = null;
 
 export function isSafeCommandName(command: string): boolean {
   return COMMAND_NAME.test(command);
@@ -90,8 +94,28 @@ export async function detectProvider(
   }
 }
 
-export async function detectProviders(): Promise<ProviderCapability[]> {
-  return Promise.all(providerAdapters().map((provider) => detectProvider(provider)));
+export async function detectProviders(options: { force?: boolean } = {}): Promise<ProviderCapability[]> {
+  const now = Date.now();
+  if (!options.force && cachedProviders && cachedProviders.expiresAt > now) {
+    return cachedProviders.value.map((provider) => ({ ...provider }));
+  }
+  if (!options.force && providerDiscovery) {
+    return (await providerDiscovery).map((provider) => ({ ...provider }));
+  }
+  const discovery = Promise.all(providerAdapters().map((provider) => detectProvider(provider)));
+  providerDiscovery = discovery;
+  try {
+    const value = await discovery;
+    cachedProviders = { expiresAt: Date.now() + PROVIDER_CACHE_MS, value };
+    return value.map((provider) => ({ ...provider }));
+  } finally {
+    if (providerDiscovery === discovery) providerDiscovery = null;
+  }
+}
+
+export function clearProviderCache(): void {
+  cachedProviders = null;
+  providerDiscovery = null;
 }
 
 function readVersion(
@@ -122,8 +146,12 @@ function readVersion(
       finish(() => reject(new Error(`Version check timed out after ${timeoutMs}ms.`)));
     }, timeoutMs);
 
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    const append = (current: string, chunk: Buffer): string =>
+      current.length >= MAX_VERSION_OUTPUT
+        ? current
+        : (current + chunk.toString()).slice(0, MAX_VERSION_OUTPUT);
+    child.stdout.on('data', (chunk: Buffer) => { stdout = append(stdout, chunk); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); });
     child.on('error', (error) => finish(() => reject(error)));
     child.on('close', (code) => finish(() => {
       const output = `${stdout}\n${stderr}`.trim();

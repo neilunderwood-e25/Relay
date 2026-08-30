@@ -103,7 +103,10 @@ export function intelligentPlanningPrompt({
     'Inspect the repository only as needed to produce a concrete execution plan. Do not modify files or Git state.',
     'Return exactly one JSON object and no Markdown. Use this schema:',
     '{"summary":"short plan rationale","tasks":[{"title":"short title","role":"owner|builder|specialist|reviewer|investigator","deliverable":"observable result","instructions":"specific bounded task","provider":"claude|codex","profileId":"optional profile id from the roster"}]}',
-    'Create 1 to 4 independently executable tasks. Use each selected profile at most once. Keep responsibilities non-overlapping and include validation ownership.'
+    'Create 1 to 4 independently executable tasks. Every task starts from the unchanged base branch in its own worktree and cannot see another task\'s edits.',
+    'Never create a review, documentation, or test task that depends on a sibling task. Put implementation-specific tests and documentation in the same task as that implementation.',
+    'No two tasks may edit the same file, even for append-only documentation or tests. Assign each shared file to exactly one task.',
+    'Use each selected profile at most once. Keep responsibilities non-overlapping and make each task run its own proportionate validation.'
   ].filter(Boolean).join('\n\n').slice(0, 4_000);
 }
 

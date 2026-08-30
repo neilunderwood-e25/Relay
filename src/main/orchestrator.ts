@@ -18,6 +18,7 @@ import type {
   ProviderId,
   TerminalDataEvent,
   TerminalExitEvent,
+  TerminalOutputMode,
   TerminalReplay,
   TerminalRole,
   TerminalSnapshot,
@@ -35,6 +36,7 @@ import {
 } from '../shared/intelligentSynthesis';
 import { planObjective, planObjectiveForAgents } from '../shared/orchestration';
 import type { PlannedTask } from '../shared/orchestration';
+import { extractProviderResult } from '../shared/providerOutput';
 import type { RelayDatabase } from './database';
 import { providerAdapter } from './providerAdapters';
 
@@ -42,6 +44,10 @@ export { planObjective } from '../shared/orchestration';
 
 const MAX_OBJECTIVE_LENGTH = 2_000;
 const MAX_CONCURRENCY = 4;
+const PLANNING_TIMEOUT_MS = 5 * 60_000;
+const SYNTHESIS_TIMEOUT_MS = 5 * 60_000;
+const VERIFICATION_TIMEOUT_MS = 15 * 60_000;
+const WORKER_TIMEOUT_MS = 45 * 60_000;
 
 interface WorktreeService {
   inspect(directory: string): Promise<{
@@ -72,6 +78,7 @@ interface TerminalService {
     rows?: number;
     args?: string[];
     role?: TerminalRole;
+    outputMode?: TerminalOutputMode;
   }): Promise<TerminalSnapshot>;
   stop(id: string, force?: boolean): OperationResult;
   replay(id: string): TerminalReplay;
@@ -86,11 +93,14 @@ export interface OrchestratorOptions {
   getOrchestratorName?: () => string;
   getOrchestratorConfig?: () => { provider: ProviderId; model: string | null };
   onCoordinationMessage?: (message: HiveCoordinationMessage) => void;
+  phaseTimeouts?: Partial<Record<'planning' | 'worker' | 'synthesis' | 'verification', number>>;
   onUpdate?: (snapshot: OrchestrationSnapshot) => void;
 }
 
 export class Orchestrator {
   private readonly runTails = new Map<string, Promise<void>>();
+  private readonly terminalTimeouts = new Map<string, NodeJS.Timeout>();
+  private readonly timeoutReasons = new Map<string, string>();
 
   constructor(private readonly options: OrchestratorOptions) {}
 
@@ -100,6 +110,12 @@ export class Orchestrator {
       this.options.logger.warn({ recovered }, 'Recovered interrupted orchestrator tasks');
     }
     return recovered;
+  }
+
+  shutdown(): void {
+    for (const timer of this.terminalTimeouts.values()) clearTimeout(timer);
+    this.terminalTimeouts.clear();
+    this.timeoutReasons.clear();
   }
 
   list(repoRoot?: string): OrchestrationSnapshot[] {
@@ -194,8 +210,12 @@ export class Orchestrator {
   async replan(request: OrchestrationReplanRequest): Promise<OrchestrationSnapshot> {
     const source = request?.runId && this.options.database.getOrchestration(request.runId);
     if (!source) throw new Error('Orchestrator run was not found.');
-    if (!['blocked', 'failed', 'stopped'].includes(source.run.status)) {
-      throw new Error('Only blocked, failed, or stopped runs can be re-planned.');
+    const recoverable = ['blocked', 'failed', 'stopped'].includes(source.run.status)
+      || source.run.integrationStatus === 'conflict'
+      || source.run.integrationStatus === 'failed'
+      || source.run.verificationStatus === 'failed';
+    if (!recoverable) {
+      throw new Error('Only blocked, failed, stopped, conflicted, or verification-failed runs can be re-planned.');
     }
     const profileIds = [...new Set(source.tasks.flatMap((task) => task.profileId ? [task.profileId] : []))];
     const providers = [...new Set(source.tasks.map((task) => task.provider))];
@@ -462,6 +482,7 @@ export class Orchestrator {
       const prompt = verificationPrompt(snapshot.run, this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME);
       const terminal = await this.options.terminals.spawn({
         provider: provider.id,
+        outputMode: 'event-stream',
         avatarSeed: `${runId}-verification`,
         name: 'Verifier',
         cwd: snapshot.run.repoRoot,
@@ -469,6 +490,7 @@ export class Orchestrator {
         rows: 32,
         args: providerAdapter(provider.id).verificationArgs(prompt)
       });
+      this.armTerminalTimeout(terminal.id, this.phaseTimeout('verification', VERIFICATION_TIMEOUT_MS), 'Verification timed out after 15 minutes.');
       snapshot.run.verificationStatus = 'running';
       snapshot.run.verificationProvider = provider.id;
       snapshot.run.verificationTerminalId = terminal.id;
@@ -528,6 +550,7 @@ export class Orchestrator {
   }
 
   handleTerminalExit(event: TerminalExitEvent): void {
+    const timeoutReason = this.clearTerminalTimeout(event.id);
     const task = this.options.database.getOrchestrationTaskByTerminal(event.id);
     if (!task) {
       const planning = this.options.database.getOrchestrationByPlanningTerminal(event.id);
@@ -535,10 +558,11 @@ export class Orchestrator {
         void this.enqueue(planning.run.id, async () => {
           const current = this.options.database.getOrchestration(planning.run.id);
           if (!current || current.run.status !== 'planning') return;
-          const replay = this.safeReplay(event.id);
+          const replay = this.providerReplay(current.run.planningProvider, this.safeReplay(event.id));
           const fallback = this.fallbackPlan(current.run);
           try {
-            if (event.exitCode !== 0) throw new Error(`Planner exited with code ${event.exitCode}.`);
+            if (timeoutReason) throw new Error(timeoutReason);
+            if (event.exitCode !== 0) throw new Error(providerFailureMessage('Planner', replay, event.exitCode));
             const parsed = parseIntelligentPlan(replay.data, {
               providers: current.run.planningProviders ?? [],
               profiles: this.planningCandidates(current.run)
@@ -561,9 +585,10 @@ export class Orchestrator {
         void this.enqueue(synthesis.run.id, async () => {
           const current = this.options.database.getOrchestration(synthesis.run.id);
           if (!current || current.run.synthesisStatus !== 'running') return;
-          const replay = this.safeReplay(event.id);
+          const replay = this.providerReplay(current.run.synthesisProvider, this.safeReplay(event.id));
           try {
-            if (event.exitCode !== 0) throw new Error(`Outcome writer exited with code ${event.exitCode}.`);
+            if (timeoutReason) throw new Error(timeoutReason);
+            if (event.exitCode !== 0) throw new Error(providerFailureMessage('Outcome writer', replay, event.exitCode));
             this.finalizeSynthesis(current, parseIntelligentSynthesis(replay.data), 'completed');
           } catch (error) {
             this.finalizeSynthesis(
@@ -581,11 +606,18 @@ export class Orchestrator {
       void this.enqueue(verification.run.id, async () => {
         const current = this.options.database.getOrchestration(verification.run.id);
         if (!current || current.run.verificationStatus !== 'running') return;
-        current.run.verificationStatus = event.exitCode === 0 ? 'passed' : 'failed';
-        current.run.verificationSummary = summaryFromReplay(this.safeReplay(event.id));
-        current.run.verificationError = event.exitCode === 0
-          ? undefined
-          : `Verifier exited with code ${event.exitCode}.`;
+        const replay = this.providerReplay(current.run.verificationProvider, this.safeReplay(event.id));
+        const verdict = verificationVerdict(replay);
+        current.run.verificationStatus = !timeoutReason && event.exitCode === 0 && verdict.status === 'passed'
+          ? 'passed'
+          : 'failed';
+        current.run.verificationSummary = summaryFromReplay(replay);
+        current.run.verificationError = timeoutReason
+          ?? (event.exitCode !== 0
+            ? providerFailureMessage('Verifier', replay, event.exitCode)
+            : verdict.status === 'failed'
+              ? verdict.reason
+              : undefined);
         current.run.updatedAt = event.exitedAt;
         this.options.database.updateOrchestrationRun(current.run);
         this.options.database.appendEvent('orchestration.verification.finished', {
@@ -602,11 +634,13 @@ export class Orchestrator {
       const run = this.options.database.getOrchestration(task.runId)?.run;
       if (!current || !run || isFinalTask(current.status)) return;
       const stopped = current.status === 'stopping' || run.status === 'stopping' || run.status === 'stopped';
-      const replay = this.safeReplay(event.id);
+      const replay = this.providerReplay(current.provider, this.safeReplay(event.id));
       current.summary = summaryFromReplay(replay);
       current.blocker = stopped ? undefined : blockerFromReplay(replay);
-      current.status = stopped ? 'stopped' : current.blocker ? 'blocked' : event.exitCode === 0 ? 'completed' : 'failed';
-      current.error = current.status === 'failed' ? `Worker exited with code ${event.exitCode}.` : undefined;
+      current.status = stopped ? 'stopped' : current.blocker ? 'blocked' : !timeoutReason && event.exitCode === 0 ? 'completed' : 'failed';
+      current.error = current.status === 'failed'
+        ? timeoutReason ?? providerFailureMessage(DEFAULT_AGENT_NAMES[current.provider], replay, event.exitCode)
+        : undefined;
       current.updatedAt = event.exitedAt;
       current.completedAt = event.exitedAt;
       this.options.database.updateOrchestrationTask(current);
@@ -655,6 +689,7 @@ export class Orchestrator {
       });
       const terminal = await this.options.terminals.spawn({
         provider: planner.id,
+        outputMode: 'event-stream',
         role: 'planner',
         avatarSeed: `${run.id}-planner`,
         name: `${this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME} Plan`,
@@ -663,6 +698,7 @@ export class Orchestrator {
         rows: 32,
         args: providerAdapter(planner.id).planningArgs(prompt, run.planningModel)
       });
+      this.armTerminalTimeout(terminal.id, this.phaseTimeout('planning', PLANNING_TIMEOUT_MS), 'Planning timed out after 5 minutes.');
       run.planningTerminalId = terminal.id;
       run.updatedAt = Date.now();
       this.options.database.updateOrchestrationRun(run);
@@ -799,6 +835,7 @@ export class Orchestrator {
       const prompt = workerPrompt(run, task, this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME);
       const terminal = await this.options.terminals.spawn({
         provider: task.provider,
+        outputMode: 'event-stream',
         avatarSeed: task.avatarSeed ?? task.id,
         cwd: task.worktreePath,
         name: task.agentName ?? personNameForSeed(task.id),
@@ -806,6 +843,7 @@ export class Orchestrator {
         rows: 32,
         args: providerAdapter(task.provider).workerArgs(prompt, task.model)
       });
+      this.armTerminalTimeout(terminal.id, this.phaseTimeout('worker', WORKER_TIMEOUT_MS), 'Worker timed out after 45 minutes.');
       task.terminalId = terminal.id;
       task.status = 'running';
       task.error = undefined;
@@ -892,6 +930,7 @@ export class Orchestrator {
       });
       const terminal = await this.options.terminals.spawn({
         provider: provider.id,
+        outputMode: 'event-stream',
         role: 'synthesizer',
         avatarSeed: `${runId}-synthesis`,
         name: `${this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME} Outcome`,
@@ -900,6 +939,7 @@ export class Orchestrator {
         rows: 32,
         args: providerAdapter(provider.id).planningArgs(prompt, model)
       });
+      this.armTerminalTimeout(terminal.id, this.phaseTimeout('synthesis', SYNTHESIS_TIMEOUT_MS), 'Final synthesis timed out after 5 minutes.');
       const current = this.options.database.getOrchestration(runId);
       if (!current || current.run.synthesisStatus !== 'running') {
         this.options.terminals.stop(terminal.id);
@@ -990,12 +1030,48 @@ export class Orchestrator {
     });
   }
 
+  private armTerminalTimeout(terminalId: string, durationMs: number, reason: string): void {
+    const previous = this.terminalTimeouts.get(terminalId);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      this.terminalTimeouts.delete(terminalId);
+      this.timeoutReasons.set(terminalId, reason);
+      this.options.database.appendEvent('terminal.timed_out', { terminalId, reason });
+      this.options.logger.warn({ terminalId, durationMs }, reason);
+      this.options.terminals.stop(terminalId);
+    }, durationMs);
+    timer.unref();
+    this.terminalTimeouts.set(terminalId, timer);
+  }
+
+  private phaseTimeout(
+    phase: 'planning' | 'worker' | 'synthesis' | 'verification',
+    fallback: number
+  ): number {
+    const configured = this.options.phaseTimeouts?.[phase];
+    return Number.isFinite(configured) ? Math.max(10, Math.round(configured!)) : fallback;
+  }
+
+  private clearTerminalTimeout(terminalId: string): string | undefined {
+    const timer = this.terminalTimeouts.get(terminalId);
+    if (timer) clearTimeout(timer);
+    this.terminalTimeouts.delete(terminalId);
+    const reason = this.timeoutReasons.get(terminalId);
+    this.timeoutReasons.delete(terminalId);
+    return reason;
+  }
+
   private safeReplay(terminalId: string): TerminalReplay {
     try {
       return this.options.terminals.replay(terminalId);
     } catch {
       return { data: '', lastSequence: 0 };
     }
+  }
+
+  private providerReplay(provider: ProviderId | undefined, replay: TerminalReplay): TerminalReplay {
+    if (!provider) return replay;
+    return { ...replay, data: extractProviderResult(provider, replay.data) };
   }
 
   private emit(runId: string): void {
@@ -1045,7 +1121,8 @@ function verificationPrompt(run: OrchestrationRun, orchestratorName: string): st
     `Integrated branch: ${run.baseBranch}`,
     'Inspect the integrated changes, run the most relevant existing checks, and report defects with file references.',
     'This is read-only verification. Do not edit files, create commits, or change Git state.',
-    'End with a concise verdict and list the checks you ran.'
+    'End with a concise verdict and list the checks you ran.',
+    'Your final non-empty line must be exactly `RELAY_VERDICT: PASS` when every relevant check passes, or `RELAY_VERDICT: FAIL - <short reason>` when any check fails or cannot be run.'
   ].join('\n\n').slice(0, 4_000);
 }
 
@@ -1100,6 +1177,41 @@ function blockerFromReplay(replay: TerminalReplay): string | undefined {
   return reason ? reason.slice(0, 500) : undefined;
 }
 
+export function verificationVerdict(replay: TerminalReplay): { status: 'passed' | 'failed'; reason?: string } {
+  const plain = replay.data
+    .replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\x1B\\))/g, '')
+    .replace(/\r/g, '');
+  const matches = [...plain.matchAll(/(?:^|\n)\s*RELAY_VERDICT:\s*(PASS|FAIL)(?:\s*-\s*(.*?))?\s*(?=\n|$)/gi)];
+  const marker = matches.at(-1);
+  if (!marker) {
+    return { status: 'failed', reason: 'Verifier did not return a RELAY_VERDICT marker.' };
+  }
+  if (marker[1].toUpperCase() === 'PASS') return { status: 'passed' };
+  const reason = marker[2]?.replace(/\s+/g, ' ').trim();
+  return { status: 'failed', reason: reason?.slice(0, 500) || 'Verifier reported a failed check.' };
+}
+
+export function providerFailureMessage(label: string, replay: TerminalReplay, exitCode: number): string {
+  const output = replay.data
+    .replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\x1B\\))/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (/not logged in|login required|authentication|unauthorized|invalid api key|sign in/.test(output)) {
+    return `${label} authentication is required. Sign in with the CLI, then retry.`;
+  }
+  if (/permission denied|operation not permitted|eacces|access denied/.test(output)) {
+    return `${label} was denied filesystem access. Check folder permissions, then retry.`;
+  }
+  if (/rate limit|too many requests|quota exceeded|usage limit/.test(output)) {
+    return `${label} reached a usage limit. Wait or change accounts, then retry.`;
+  }
+  if (/econn|enotfound|network error|connection (?:failed|reset)|socket hang up/.test(output)) {
+    return `${label} could not reach its service. Check the network, then retry.`;
+  }
+  return `${label} exited with code ${exitCode}.`;
+}
+
 function replanContext(snapshot: OrchestrationSnapshot): string {
   const outcomes = snapshot.tasks.map((task) => {
     const result = task.blocker ?? task.error ?? task.summary ?? 'No worker report.';
@@ -1107,6 +1219,8 @@ function replanContext(snapshot: OrchestrationSnapshot): string {
   });
   return [
     `Previous run ${snapshot.run.id} ended ${snapshot.run.status}.`,
+    snapshot.run.integrationError ? `Integration: ${snapshot.run.integrationError}` : '',
+    snapshot.run.verificationError ? `Verification: ${snapshot.run.verificationError}` : '',
     snapshot.run.finalSummary ?? '',
     ...outcomes
   ].filter(Boolean).join(' ').slice(0, 1_800);

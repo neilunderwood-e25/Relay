@@ -42,6 +42,112 @@ export interface HiveCoordinationMessage {
   createdAt: number;
 }
 
+export type RelayControlKind =
+  | 'input.submitted'
+  | 'action.completed'
+  | 'action.rejected'
+  | 'run.started'
+  | 'run.completed'
+  | 'run.blocked'
+  | 'run.failed'
+  | 'run.replanned'
+  | 'run.stopped'
+  | 'task.retried'
+  | 'task.reviewed'
+  | 'run.integrated'
+  | 'run.verification_requested'
+  | 'run.verified'
+  | 'run.cleaned';
+
+export interface RelayControlCommand {
+  version: 1;
+  id: string;
+  kind: RelayControlKind;
+  actor: 'human' | 'relay';
+  createdAt: number;
+  projectPath: string;
+  runId: string;
+  taskId?: string;
+  objective: string;
+  strategy: OrchestrationStrategy;
+  payload: Record<string, string | number | boolean | null>;
+}
+
+export interface OrchestratorInputRequest {
+  text: string;
+  strategy: OrchestrationStrategy;
+  providers: ProviderId[];
+  concurrency: number;
+  profileIds?: string[];
+  templateId?: string;
+}
+
+export interface OrchestratorInputReceipt {
+  id: string;
+  status: 'queued';
+  submittedAt: number;
+}
+
+export type OrchestratorProjectionStatus = 'starting' | 'ready' | 'working' | 'stopped' | 'error';
+export type OrchestratorProjectionEventKind = 'input' | 'action' | 'run' | 'system';
+
+export interface OrchestratorProjectionEvent {
+  id: string;
+  kind: OrchestratorProjectionEventKind;
+  label: string;
+  createdAt: number;
+}
+
+export interface OrchestratorProjectionSnapshot {
+  terminalId: string | null;
+  status: OrchestratorProjectionStatus;
+  updatedAt: number;
+  lastSequence: number;
+  lines: string[];
+  events: OrchestratorProjectionEvent[];
+}
+
+export type OrchestratorActionKind =
+  | 'run.create'
+  | 'run.stop'
+  | 'run.replan'
+  | 'task.retry'
+  | 'task.review'
+  | 'run.integrate'
+  | 'run.verify'
+  | 'run.cleanup';
+
+/** An untrusted, allowlisted request written by Michael for Relay main to execute. */
+export interface OrchestratorActionRequest {
+  version: 1;
+  id: string;
+  kind: OrchestratorActionKind;
+  createdAt: number;
+  inputId?: string;
+  runId?: string;
+  taskId?: string;
+  objective?: string;
+  strategy?: OrchestrationStrategy;
+  providers?: ProviderId[];
+  concurrency?: number;
+  profileIds?: string[];
+  templateId?: string;
+  decision?: 'accepted' | 'rejected';
+  provider?: ProviderId;
+}
+
+export interface OrchestratorActionResult {
+  version: 1;
+  actionId: string;
+  kind: OrchestratorActionKind | 'unknown';
+  status: 'completed' | 'rejected';
+  completedAt: number;
+  runId?: string;
+  taskId?: string;
+  summary?: string;
+  error?: string;
+}
+
 export interface WorkspaceConfig {
   onboardingComplete: boolean;
   harnessHome: string | null;
@@ -166,12 +272,14 @@ export interface RuntimeDiagnostics {
 export interface RecoveryResult {
   ok: boolean;
   recoveredItems: number;
+  replayedControls: number;
   missingWorktrees: number;
   error?: string;
 }
 
 export type TerminalStatus = 'starting' | 'running' | 'stopping' | 'exited';
 export type TerminalRole = 'worker' | 'orchestrator' | 'planner' | 'synthesizer';
+export type TerminalOutputMode = 'terminal' | 'event-stream';
 
 export interface TerminalSpawnRequest {
   provider: ProviderId;
@@ -182,6 +290,7 @@ export interface TerminalSpawnRequest {
   cols?: number;
   rows?: number;
   args?: string[];
+  outputMode?: TerminalOutputMode;
 }
 
 export interface TerminalSnapshot {
@@ -200,6 +309,7 @@ export interface TerminalSnapshot {
   lastOutputAt: number;
   hasOutput: boolean;
   lastSequence: number;
+  outputMode?: TerminalOutputMode;
   exitCode?: number;
   exitSignal?: number;
   exitedAt?: number;
@@ -269,6 +379,7 @@ export interface WorktreeCreateRequest {
 
 export interface WorktreeRemoveRequest {
   id: string;
+  repoPath?: string;
   force?: boolean;
 }
 
@@ -458,6 +569,9 @@ export interface RelayApi {
   chooseDirectory(purpose?: 'home' | 'project'): Promise<string | null>;
   configureWorkspace(request: WorkspaceConfigureRequest): Promise<AppSnapshot>;
   renameOrchestrator(request: OrchestratorRenameRequest): Promise<AppSnapshot>;
+  ensureOrchestratorSession(): Promise<TerminalSnapshot>;
+  submitOrchestratorInput(request: OrchestratorInputRequest): Promise<OrchestratorInputReceipt>;
+  getOrchestratorProjection(): Promise<OrchestratorProjectionSnapshot>;
   inspectRepository(directory: string): Promise<RepositorySnapshot>;
   createWorktree(request: WorktreeCreateRequest): Promise<WorktreeSnapshot>;
   removeWorktree(request: WorktreeRemoveRequest): Promise<OperationResult>;
@@ -490,4 +604,5 @@ export interface RelayApi {
   onTerminalData(listener: (event: TerminalDataEvent) => void): Unsubscribe;
   onTerminalExit(listener: (event: TerminalExitEvent) => void): Unsubscribe;
   onOrchestrationUpdate(listener: (snapshot: OrchestrationSnapshot) => void): Unsubscribe;
+  onOrchestratorProjection(listener: (snapshot: OrchestratorProjectionSnapshot) => void): Unsubscribe;
 }

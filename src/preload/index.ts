@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   RelayApi,
+  OrchestratorProjectionSnapshot,
   OrchestrationSnapshot,
   TerminalDataEvent,
   TerminalExitEvent
@@ -13,6 +14,9 @@ const api: RelayApi = {
   chooseDirectory: (purpose) => ipcRenderer.invoke(IPC.chooseDirectory, purpose),
   configureWorkspace: (request) => ipcRenderer.invoke(IPC.workspaceConfigure, request),
   renameOrchestrator: (request) => ipcRenderer.invoke(IPC.orchestratorRename, request),
+  ensureOrchestratorSession: () => ipcRenderer.invoke(IPC.orchestratorSessionEnsure),
+  submitOrchestratorInput: (request) => ipcRenderer.invoke(IPC.orchestratorInputSubmit, request),
+  getOrchestratorProjection: () => ipcRenderer.invoke(IPC.orchestratorProjectionGet),
   inspectRepository: (directory) => ipcRenderer.invoke(IPC.repositoryInspect, directory),
   createWorktree: (request) => ipcRenderer.invoke(IPC.worktreeCreate, request),
   removeWorktree: (request) => ipcRenderer.invoke(IPC.worktreeRemove, request),
@@ -56,6 +60,11 @@ const api: RelayApi = {
     const handler = (_event: Electron.IpcRendererEvent, payload: OrchestrationSnapshot): void => listener(payload);
     ipcRenderer.on(IPC.orchestrationUpdate, handler);
     return () => ipcRenderer.removeListener(IPC.orchestrationUpdate, handler);
+  },
+  onOrchestratorProjection: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: OrchestratorProjectionSnapshot): void => listener(payload);
+    ipcRenderer.on(IPC.orchestratorProjectionUpdate, handler);
+    return () => ipcRenderer.removeListener(IPC.orchestratorProjectionUpdate, handler);
   }
 };
 

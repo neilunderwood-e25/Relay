@@ -19,6 +19,14 @@ import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
 import { Alert, AlertDescription } from './ui/alert';
 import { Card, CardContent, CardHeader } from './ui/Card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from './ui/dialog';
 import { Icon } from './ui/Icon';
 import { Input } from './ui/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/Select';
@@ -36,6 +44,7 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<WorktreeSnapshot | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -80,9 +89,14 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
     setBusy(worktree.id);
     setError(null);
     try {
-      const result = await window.relay.removeWorktree({ id: worktree.id });
+      const result = await window.relay.removeWorktree({
+        id: worktree.id,
+        repoPath: worktree.managed ? undefined : (repository?.mainRoot ?? cwd),
+        force: worktree.dirty || worktree.ahead > 0
+      });
       if (!result.ok) throw new Error(result.error ?? 'Worktree removal failed.');
       await refresh();
+      setDeleteTarget(null);
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -90,14 +104,14 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
     }
   };
 
-  const managedCount = repository?.worktrees.filter((worktree) => worktree.managed).length ?? 0;
+  const worktreeCount = repository?.worktrees.filter((worktree) => !worktree.isMain).length ?? 0;
 
   return (
     <section className="worktrees-workspace">
       <header className="dashboard-header">
         <div className="dashboard-title">
           <h1>Worktrees</h1>
-          <Badge variant={managedCount > 0 ? 'default' : 'secondary'}>{managedCount}</Badge>
+          <Badge variant={worktreeCount > 0 ? 'default' : 'secondary'}>{worktreeCount}</Badge>
         </div>
         <div className="worker-actions">
           <Tooltip content="Choose project">
@@ -136,9 +150,13 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
                 onChange={(event) => setName(event.target.value)}
                 onKeyDown={(event) => { if (event.key === 'Enter') void create(); }}
               />
-              <Select value={baseBranch || undefined} onValueChange={(value) => setBaseBranch(value ?? '')} disabled={busy !== null || loading || !repository?.branches.length}>
+              <Select
+                value={baseBranch || undefined}
+                onValueChange={(value) => { if (value) setBaseBranch(value); }}
+                disabled={busy !== null || loading || !repository?.branches.length}
+              >
                 <SelectTrigger aria-label="Base branch">
-                  <SelectValue placeholder="No commits" />
+                  <SelectValue placeholder="No commits">{baseBranch || 'No commits'}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {(repository?.branches ?? []).map((branch) => <SelectItem key={branch} value={branch}>{branch}</SelectItem>)}
@@ -162,10 +180,25 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
                 providers={providers}
                 busy={busy === worktree.id}
                 onLaunch={onLaunch}
-                onRemove={remove}
+                onRemove={(worktree) => { setDeleteTarget(worktree); }}
               />
             ))}
           </div>
+
+          <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => { if (!open && !busy) setDeleteTarget(null); }}>
+            <DialogContent className="confirm-dialog">
+              <DialogHeader>
+                <DialogTitle>Delete worktree?</DialogTitle>
+                <DialogDescription>{deleteWarning(deleteTarget)}</DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button variant="ghost" disabled={busy !== null} onClick={() => setDeleteTarget(null)}>Cancel</Button>
+                <Button variant="destructive" disabled={busy !== null} onClick={() => { if (deleteTarget) void remove(deleteTarget); }}>
+                  {busy ? 'Deleting' : deleteTarget?.dirty ? 'Delete anyway' : 'Delete'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </>
       )}
     </section>
@@ -177,17 +210,15 @@ function WorktreeCard({ worktree, providers, busy, onLaunch, onRemove }: {
   providers: ProviderCapability[];
   busy: boolean;
   onLaunch: (provider: ProviderId, cwd: string, label: string) => Promise<void>;
-  onRemove: (worktree: WorktreeSnapshot) => Promise<void>;
+  onRemove: (worktree: WorktreeSnapshot) => void;
 }): React.JSX.Element {
   const label = worktree.isMain ? 'Main checkout' : worktree.branch.replace(/^(?:relay|foundry)\//, '');
   const unavailable = worktree.status === 'missing' || worktree.status === 'locked';
   const removeLabel = worktree.status === 'missing'
     ? 'Forget worktree'
-    : worktree.dirty
-    ? 'Changes present'
-    : worktree.ahead > 0
-      ? 'Unmerged commits'
-      : 'Remove worktree';
+    : worktree.status === 'locked'
+      ? 'Unlock first'
+      : 'Delete worktree';
 
   return (
     <Card className={`worktree-card status-${worktree.status}`}>
@@ -222,7 +253,7 @@ function WorktreeCard({ worktree, providers, busy, onLaunch, onRemove }: {
               </Button>
             ))}
           </div>
-          {worktree.managed && (
+          {!worktree.isMain && (
             <Tooltip content={removeLabel}>
               <span className="disabled-tooltip-target">
                 <Button
@@ -230,7 +261,7 @@ function WorktreeCard({ worktree, providers, busy, onLaunch, onRemove }: {
                   size="icon"
                   className="danger-icon-button"
                   aria-label="Remove worktree"
-                  disabled={busy || worktree.dirty || worktree.ahead > 0 || worktree.status === 'locked'}
+                  disabled={busy || worktree.status === 'locked'}
                   onClick={() => void onRemove(worktree)}
                 >
                   <Icon icon={Delete02Icon} size={15} />
@@ -254,4 +285,12 @@ function StatusBadge({ worktree }: { worktree: WorktreeSnapshot }): React.JSX.El
 
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function deleteWarning(worktree: WorktreeSnapshot | null): string {
+  if (!worktree) return '';
+  if (worktree.status === 'missing') return 'Remove this missing worktree record?';
+  if (worktree.dirty) return 'Uncommitted changes will be lost. The Git branch remains.';
+  if (worktree.ahead > 0) return 'The folder will be removed. Its branch and commits remain.';
+  return 'The worktree folder will be removed. Its Git branch remains.';
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import {
   ChatGptIcon,
   ClaudeIcon,
@@ -23,24 +23,21 @@ export function OrchestratorTerminal({
   name,
   providers,
   orchestratorProvider,
-  orchestratorModel
+  orchestratorModel,
+  terminal
 }: {
   cwd: string;
   name: string;
   providers: ProviderCapability[];
   orchestratorProvider: ProviderId;
   orchestratorModel: string | null;
+  terminal: TerminalSnapshot | null;
 }): React.JSX.Element {
-  const terminals = useTerminalStore((state) => state.terminals);
   const upsert = useTerminalStore((state) => state.upsert);
   const remove = useTerminalStore((state) => state.remove);
   const markStopping = useTerminalStore((state) => state.markStopping);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const terminal = useMemo(() => terminals
-    .filter((candidate) => candidate.role === 'orchestrator')
-    .sort((left, right) => right.createdAt - left.createdAt)[0] ?? null, [terminals]);
 
   const launch = async (): Promise<void> => {
     if (!cwd.trim()) return;
@@ -51,16 +48,7 @@ export function OrchestratorTerminal({
         const dismissed = await window.relay.dismissTerminal(terminal.id);
         if (dismissed.ok) remove(terminal.id);
       }
-      const created = await window.relay.spawnTerminal({
-        provider: orchestratorProvider,
-        role: 'orchestrator',
-        avatarSeed: 'relay-orchestrator',
-        cwd: cwd.trim(),
-        name,
-        cols: 120,
-        rows: 32,
-        args: orchestratorModel ? ['--model', orchestratorModel] : []
-      });
+      const created = await window.relay.ensureOrchestratorSession();
       upsert(created);
     } catch (cause) {
       setError(messageOf(cause));

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
@@ -67,8 +67,11 @@ describe('WorktreeManager', () => {
       managed: true,
       status: 'ready'
     });
+    expect(created.path).toBe(join(realpathSync(repo), '.relay', 'worktrees', 'worker-one'));
     expect(existsSync(created.path)).toBe(true);
     expect(database.getWorktree(created.id)?.path).toBe(created.path);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+    expect(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8')).toContain('/.relay/worktrees/');
 
     const refreshed = await manager.inspect(repo);
     expect(refreshed.worktrees.some((worktree) => worktree.id === created.id)).toBe(true);
@@ -129,6 +132,10 @@ describe('WorktreeManager', () => {
     const { repo, database, manager } = fixture();
     const created = await manager.create({ repoPath: repo, name: 'integrate-task' });
     writeFileSync(join(created.path, 'feature.ts'), 'export const feature = true;\n');
+    const hookMarker = join(repo, 'hook-ran');
+    const hook = join(repo, '.git', 'hooks', 'post-commit');
+    writeFileSync(hook, `#!/bin/sh\ntouch "${hookMarker}"\n`);
+    chmodSync(hook, 0o755);
 
     const result = await manager.integrate(created.id, 'Relay: integrate task');
 
@@ -136,6 +143,7 @@ describe('WorktreeManager', () => {
     expect(existsSync(join(repo, 'feature.ts'))).toBe(true);
     expect(git(repo, 'log', '-1', '--pretty=%s')).toBe('Relay: integrate task');
     expect(git(repo, 'status', '--porcelain')).toBe('');
+    expect(existsSync(hookMarker)).toBe(false);
     database.close();
   });
 
@@ -181,6 +189,69 @@ describe('WorktreeManager', () => {
     await expect(manager.create({ repoPath: repo, name: '../escape' }))
       .rejects.toThrow('Use 1–48 letters, numbers, dots, dashes, or underscores.');
     expect(database.listWorktrees()).toEqual([]);
+    database.close();
+  });
+
+  it('rejects a symlinked managed worktree directory', async () => {
+    const { root, repo, database, manager } = fixture();
+    const outside = join(root, 'outside-worktrees');
+    mkdirSync(outside);
+    symlinkSync(outside, join(repo, '.relay'));
+
+    await expect(manager.create({ repoPath: repo, name: 'escaped' }))
+      .rejects.toThrow('resolves outside the project');
+    expect(database.listWorktrees()).toEqual([]);
+    database.close();
+  });
+
+  it('keeps legacy Harness Home worktrees removable after changing the layout', async () => {
+    const { root, repo, database, manager } = fixture();
+    const path = join(root, 'worktrees', 'legacy-agent');
+    git(repo, 'worktree', 'add', '--no-track', '-b', 'relay/legacy-agent', path, 'main');
+    const now = Date.now();
+    database.upsertWorktree({
+      id: 'worktree-legacy',
+      repoRoot: realpathSync(repo),
+      path,
+      branch: 'relay/legacy-agent',
+      baseBranch: 'main',
+      createdAt: now,
+      updatedAt: now
+    });
+
+    await expect(manager.remove({ id: 'worktree-legacy' })).resolves.toEqual({ ok: true });
+    expect(existsSync(path)).toBe(false);
+    database.close();
+  });
+
+  it('removes Git-registered external worktrees while preserving their branches', async () => {
+    const { root, repo, database, manager } = fixture();
+    const path = join(root, 'external-worktree');
+    git(repo, 'worktree', 'add', '--no-track', '-b', 'external/manual-check', path, 'main');
+    const snapshot = await manager.inspect(repo);
+    const external = snapshot.worktrees.find((worktree) => worktree.path === realpathSync(path));
+    expect(external).toMatchObject({ managed: false, isMain: false });
+
+    await expect(manager.remove({ id: external!.id, repoPath: repo })).resolves.toEqual({ ok: true });
+    expect(existsSync(path)).toBe(false);
+    expect(git(repo, 'branch', '--list', 'external/manual-check')).toContain('external/manual-check');
+    database.close();
+  });
+
+  it('requires force before deleting an external worktree with uncommitted changes', async () => {
+    const { root, repo, database, manager } = fixture();
+    const path = join(root, 'dirty-external');
+    git(repo, 'worktree', 'add', '--no-track', '-b', 'external/dirty', path, 'main');
+    writeFileSync(join(path, 'draft.txt'), 'unsaved\n');
+    const external = (await manager.inspect(repo)).worktrees.find((worktree) => worktree.path === realpathSync(path))!;
+
+    await expect(manager.remove({ id: external.id, repoPath: repo })).resolves.toEqual({
+      ok: false,
+      error: 'Worktree has uncommitted changes.'
+    });
+    expect(existsSync(path)).toBe(true);
+    await expect(manager.remove({ id: external.id, repoPath: repo, force: true })).resolves.toEqual({ ok: true });
+    expect(existsSync(path)).toBe(false);
     database.close();
   });
 });

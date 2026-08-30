@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity01Icon,
   Alert02Icon,
@@ -34,6 +34,7 @@ import {
   type ProviderId,
   type RelayPreferences,
   type RepositorySnapshot,
+  type TerminalSnapshot,
   type TaskDiffSnapshot
 } from '../../../shared/contracts';
 import { personNameForSeed } from '../../../shared/agentIdentity';
@@ -48,6 +49,7 @@ import { Input } from './ui/Input';
 import { Tooltip } from './ui/app-tooltip';
 import { RichTextEditor } from './RichTextEditor';
 import { OrchestratorTerminal } from './OrchestratorTerminal';
+import { OrchestratorProjection } from './OrchestratorProjection';
 import { Tabs, TabsList, TabsTrigger } from './ui/Tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/Select';
 import {
@@ -91,6 +93,7 @@ export function OrchestratorWorkspace({
   orchestratorName,
   orchestratorProvider,
   orchestratorModel,
+  orchestratorTerminal,
   preferences,
   profiles,
   templates,
@@ -103,6 +106,7 @@ export function OrchestratorWorkspace({
   orchestratorName: string;
   orchestratorProvider: ProviderId;
   orchestratorModel: string | null;
+  orchestratorTerminal: TerminalSnapshot | null;
   preferences: RelayPreferences;
   profiles: AgentProfile[];
   templates: OrchestrationTemplate[];
@@ -125,6 +129,7 @@ export function OrchestratorWorkspace({
   const [nameDraft, setNameDraft] = useState(orchestratorName);
   const [savingName, setSavingName] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<'monitor' | 'terminal'>('monitor');
+  const submissionRef = useRef(false);
 
   useEffect(() => {
     if (!editingName) setNameDraft(orchestratorName);
@@ -249,15 +254,18 @@ export function OrchestratorWorkspace({
   };
 
   const start = async (): Promise<void> => {
-    if (!objective.trim() || workerCount === 0) return;
+    if (!objective.trim() || workerCount === 0 || submissionRef.current) return;
+    submissionRef.current = true;
     setBusy(true);
     setError(null);
     try {
-      const created = await window.relay.createOrchestration({
-        repoPath: cwd,
-        objective: objective.trim(),
+      const routedProviders = selectedProfiles.length > 0
+        ? [...new Set(selectedProfiles.map((profile) => profile.provider))]
+        : selectedProviders;
+      await window.relay.submitOrchestratorInput({
+        text: objective.trim(),
         strategy,
-        providers: selectedProviders,
+        providers: routedProviders,
         profileIds: selectedProfileIds,
         templateId: selectedTemplateId === '__none__' ? undefined : selectedTemplateId,
         concurrency: Math.min(
@@ -265,13 +273,12 @@ export function OrchestratorWorkspace({
           workerCount
         )
       });
-      setRuns((current) => [created, ...current.filter((run) => run.run.id !== created.run.id)]);
-      setSelectedRunId(created.run.id);
       setObjective('');
       setSelectedTemplateId('__none__');
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
+      submissionRef.current = false;
       setBusy(false);
     }
   };
@@ -283,15 +290,18 @@ export function OrchestratorWorkspace({
   };
 
   const replan = async (snapshot: OrchestrationSnapshot): Promise<void> => {
+    if (submissionRef.current) return;
+    submissionRef.current = true;
     setBusy(true);
     setError(null);
     try {
       const created = await window.relay.replanOrchestration({ runId: snapshot.run.id });
-      setRuns((current) => [created, ...current]);
+      setRuns((current) => [created, ...current.filter((candidate) => candidate.run.id !== created.run.id)]);
       setSelectedRunId(created.run.id);
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
+      submissionRef.current = false;
       setBusy(false);
     }
   };
@@ -360,6 +370,12 @@ export function OrchestratorWorkspace({
             </>
           )}
           {activeCount > 0 && <Badge>{activeCount} active</Badge>}
+          <Tooltip content={sessionStatusLabel(orchestratorTerminal)}>
+            <span
+              className={`orchestrator-session-indicator ${orchestratorTerminal?.status ?? 'starting'}`}
+              aria-label={`${orchestratorName} session ${orchestratorTerminal?.status ?? 'starting'}`}
+            />
+          </Tooltip>
         </div>
         <div className="orchestrator-header-controls">
           <Tabs value={workspaceMode} onValueChange={(value) => setWorkspaceMode(value as 'monitor' | 'terminal')}>
@@ -385,13 +401,40 @@ export function OrchestratorWorkspace({
       {error && <Alert variant="destructive" className="worktree-error"><Icon icon={Alert02Icon} size={15} /><AlertDescription>{error}</AlertDescription></Alert>}
 
       {workspaceMode === 'terminal' ? (
-        <OrchestratorTerminal
-          cwd={cwd}
-          name={orchestratorName}
-          providers={providers}
-          orchestratorProvider={orchestratorProvider}
-          orchestratorModel={orchestratorModel}
-        />
+        <div className="orchestrator-terminal-stack">
+          <Card className="orchestrator-command-card orchestrator-terminal-composer">
+            <CardContent className="orchestrator-command-content">
+              <RichTextEditor
+                value={objective}
+                disabled={busy || loading}
+                onChange={setObjective}
+                onSubmit={() => void start()}
+              />
+              <div className="orchestrator-terminal-send">
+                <Tooltip content="Send input">
+                  <span className="disabled-tooltip-target">
+                    <Button
+                      className="orchestrator-run-button"
+                      aria-label="Send input"
+                      disabled={!objective.trim() || busy || loading || workerCount === 0}
+                      onClick={() => void start()}
+                    >
+                      <Icon icon={PlayIcon} size={14} /> Send
+                    </Button>
+                  </span>
+                </Tooltip>
+              </div>
+            </CardContent>
+          </Card>
+          <OrchestratorTerminal
+            cwd={cwd}
+            name={orchestratorName}
+            providers={providers}
+            orchestratorProvider={orchestratorProvider}
+            orchestratorModel={orchestratorModel}
+            terminal={orchestratorTerminal}
+          />
+        </div>
       ) : !loading && !repository?.isRepository ? (
         <Card className="worktree-empty-card">
           <CardContent className="worktree-empty-content">
@@ -428,20 +471,29 @@ export function OrchestratorWorkspace({
                       </Select>
                     )}
                     <div className="orchestrator-strategy-switch" aria-label="Run mode">
-                      {STRATEGIES.map((option) => (
-                        <Tooltip key={option.id} content={option.tooltip}>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={strategy === option.id ? 'secondary' : 'ghost'}
-                            className={strategy === option.id ? 'selected' : ''}
-                            aria-pressed={strategy === option.id}
-                            onClick={() => chooseStrategy(option.id)}
-                          >
-                            <Icon icon={option.icon} size={13} /> {option.label}
-                          </Button>
-                        </Tooltip>
-                      ))}
+                      {STRATEGIES.map((option) => {
+                        const selected = strategy === option.id;
+                        return (
+                          <Tooltip key={option.id} content={option.tooltip}>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              data-state={selected ? 'on' : 'off'}
+                              className={selected ? 'selected' : ''}
+                              aria-pressed={selected}
+                              style={selected ? {
+                                backgroundColor: 'var(--primary)',
+                                borderColor: 'var(--primary)',
+                                color: 'var(--primary-foreground)'
+                              } : undefined}
+                              onClick={() => chooseStrategy(option.id)}
+                            >
+                              <Icon icon={option.icon} size={13} /> {option.label}
+                            </Button>
+                          </Tooltip>
+                        );
+                      })}
                     </div>
                     <div className="orchestrator-provider-switch" aria-label="Workers">
                       {providers.map((provider) => {
@@ -485,15 +537,15 @@ export function OrchestratorWorkspace({
                       </div>
                     )}
                   </div>
-                  <Tooltip content="Start run">
+                  <Tooltip content="Send input">
                     <span className="disabled-tooltip-target">
                       <Button
                         className="orchestrator-run-button"
-                        aria-label="Start run"
+                        aria-label="Send input"
                         disabled={!objective.trim() || busy || loading || workerCount === 0}
                         onClick={() => void start()}
                       >
-                        <Icon icon={PlayIcon} size={14} /> Run
+                        <Icon icon={PlayIcon} size={14} /> Send
                       </Button>
                     </span>
                   </Tooltip>
@@ -517,12 +569,15 @@ export function OrchestratorWorkspace({
               </CardContent>
             </Card>
 
+            <OrchestratorProjection name={orchestratorName} onOpenTerminal={onOpenTerminal} />
+
             {selectedRun ? (
               <MissionCard
                 snapshot={selectedRun}
                 orchestratorName={orchestratorName}
                 onStop={stop}
                 onReplan={replan}
+                busy={busy}
                 onRetry={retry}
                 onOpenTerminal={onOpenTerminal}
                 onSnapshot={replaceRun}
@@ -559,7 +614,7 @@ export function OrchestratorWorkspace({
   );
 }
 
-function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, onOpenTerminal, onSnapshot, onError, verificationProvider }: {
+function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, onOpenTerminal, onSnapshot, onError, verificationProvider, busy }: {
   snapshot: OrchestrationSnapshot;
   orchestratorName: string;
   onStop: (runId: string) => Promise<void>;
@@ -569,6 +624,7 @@ function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, on
   onSnapshot: (snapshot: OrchestrationSnapshot) => void;
   onError: (message: string | null) => void;
   verificationProvider: ProviderId | null;
+  busy: boolean;
 }): React.JSX.Element {
   const { run, tasks } = snapshot;
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -644,9 +700,12 @@ function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, on
         </div>
         <div className="orchestrator-run-meta">
           <StatusBadge status={run.status} />
-          {['blocked', 'failed', 'stopped'].includes(run.status) && (
+          {(['blocked', 'failed', 'stopped'].includes(run.status)
+            || run.integrationStatus === 'conflict'
+            || run.integrationStatus === 'failed'
+            || run.verificationStatus === 'failed') && (
             <Tooltip content="Re-plan run">
-              <Button variant="ghost" size="icon" aria-label="Re-plan run" onClick={() => void onReplan(snapshot)}>
+              <Button variant="ghost" size="icon" aria-label="Re-plan run" disabled={busy} onClick={() => void onReplan(snapshot)}>
                 <Icon icon={RepeatIcon} size={15} />
               </Button>
             </Tooltip>
@@ -684,7 +743,7 @@ function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, on
                 </span>
               </Tooltip>
             )}
-            {integrationStatus === 'integrated' && verificationStatus !== 'running' && verificationStatus !== 'passed' && (
+            {integrationStatus === 'integrated' && verificationStatus !== 'running' && (
               <Tooltip content="Run verification">
                 <Button size="sm" variant="secondary" disabled={action !== null} onClick={() => void runAction('verify')}>
                   <Icon icon={ShieldCheckIcon} size={13} /> Verify
@@ -944,4 +1003,11 @@ function statusLabel(status: string): string {
 
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function sessionStatusLabel(terminal: TerminalSnapshot | null): string {
+  if (!terminal || terminal.status === 'starting') return 'Session starting';
+  if (terminal.status === 'running') return 'Session running';
+  if (terminal.status === 'stopping') return 'Session stopping';
+  return 'Session stopped';
 }

@@ -78,7 +78,8 @@ export function SettingsWorkspace({ snapshot, onPreferencesChange }: {
     try {
       const result = await window.relay.recoverOperations();
       if (!result.ok) throw new Error(result.error ?? 'Recovery failed.');
-      setNotice(result.recoveredItems > 0 ? `${result.recoveredItems} items recovered` : 'Workspace healthy');
+      const recovered = result.recoveredItems + result.replayedControls;
+      setNotice(recovered > 0 ? `${recovered} items recovered` : 'Workspace healthy');
       setDiagnostics(await window.relay.getDiagnostics());
     } catch (cause) {
       setError(messageOf(cause));

@@ -61,24 +61,47 @@ describe('renderer design-system contract', () => {
     expect(orchestrator).toContain('run.finalSummary');
     expect(orchestrator).toContain('window.relay.replanOrchestration');
     expect(orchestrator).toContain('Re-plan run');
+    expect(orchestrator).toContain('window.relay.submitOrchestratorInput');
+    expect(orchestrator).toContain('orchestrator-terminal-composer');
+    expect(orchestrator).toContain('<OrchestratorProjection');
+    expect(orchestrator).toContain('submissionRef.current');
+    expect(orchestrator).toContain("run.integrationStatus === 'conflict'");
+    expect(orchestrator).toContain("integrationStatus === 'integrated' && verificationStatus !== 'running'");
+  });
+
+  it('projects the shared Michael PTY without mounting a second terminal', () => {
+    const projection = read('src/renderer/src/components/OrchestratorProjection.tsx');
+    expect(projection).toContain('window.relay.getOrchestratorProjection()');
+    expect(projection).toContain('window.relay.onOrchestratorProjection');
+    expect(projection).not.toContain('<TerminalView');
+    expect(projection).toContain('aria-live="polite"');
   });
 
   it('ships the operations views on shared UI primitives', () => {
     const activity = read('src/renderer/src/components/ActivityWorkspace.tsx');
     const settings = read('src/renderer/src/components/SettingsWorkspace.tsx');
+    const worktrees = read('src/renderer/src/components/WorktreesWorkspace.tsx');
 
     expect(activity).toContain("from './ui/dialog'");
     expect(activity).toContain('window.relay.listActivity');
     expect(settings).toContain("from './ui/Card'");
     expect(settings).toContain('window.relay.updatePreferences');
     expect(settings).toContain('window.relay.recoverOperations');
+    expect(worktrees).toContain('if (value) setBaseBranch(value)');
+    expect(worktrees).toContain("{baseBranch || 'No commits'}");
   });
 
   it('retains compact-window layout rules without crushing terminal controls', () => {
     const styles = read('src/renderer/src/styles.css');
+    const orchestrator = read('src/renderer/src/components/OrchestratorWorkspace.tsx');
 
     expect(styles).toContain('@media (max-height: 680px)');
     expect(styles).toContain('.terminal-card-header { min-height: 48px; padding-block: 6px; }');
     expect(styles).toContain('@media (max-width: 980px)');
+    expect(styles).toContain(".orchestrator-strategy-switch [data-slot='button'][aria-pressed='true']");
+    expect(styles).toContain(".orchestrator-strategy-switch [data-slot='button'].selected:hover");
+    expect(styles).toContain(".orchestrator-strategy-switch [data-slot='button'][data-state='on']");
+    expect(orchestrator).toContain("data-state={selected ? 'on' : 'off'}");
+    expect(styles).toContain('background: var(--primary);');
   });
 });

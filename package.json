@@ -3,22 +3,71 @@
   "productName": "Relay",
   "version": "0.1.0",
   "private": true,
+  "author": "Relay Contributors",
   "description": "A desktop multi-agent coding harness orchestrated by Michael.",
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac": "npm run dist:mac:unsigned",
+    "dist:mac:unsigned": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip",
+    "pack:mac:unsigned": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir",
     "preview": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest run",
+    "test:cli": "RELAY_REAL_CLI=1 vitest run test/realCli.integration.test.ts --reporter=verbose",
+    "test:e2e": "npm run typecheck && npm test && npm run build && npm run test:cli",
     "test:watch": "vitest",
-    "postinstall": "install-electron && electron-rebuild -f"
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "node-pty": "1.1.0",
+    "pino": "10.3.1"
+  },
+  "build": {
+    "appId": "com.relay.harness",
+    "productName": "Relay",
+    "asar": true,
+    "artifactName": "Relay-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json",
+      "!node_modules/better-sqlite3/deps/**/*",
+      "!node_modules/better-sqlite3/src/**/*",
+      "!node_modules/better-sqlite3/prebuilds/{win32,linux,linuxmusl}-*.node",
+      "!node_modules/better-sqlite3/prebuilds/darwin-x64.node",
+      "!node_modules/node-pty/deps/**/*",
+      "!node_modules/node-pty/src/**/*",
+      "!node_modules/node-pty/prebuilds/win32-*/**/*",
+      "!node_modules/node-pty/prebuilds/darwin-x64/**/*",
+      "!node_modules/node-pty/**/*.test.*",
+      "!node_modules/node-pty/**/*.map"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/node-pty/**/*"
+    ],
+    "mac": {
+      "icon": "build/relay-app-icon.icns",
+      "category": "public.app-category.developer-tools",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "forceCodeSigning": false,
+      "target": [
+        "dmg"
+      ]
+    }
+  },
+  "devDependencies": {
     "@base-ui/react": "^1.7.0",
     "@dicebear/core": "^10.7.0",
     "@dicebear/styles": "^10.6.0",
@@ -30,56 +79,26 @@
     "@xterm/addon-unicode11": "0.9.0",
     "@xterm/addon-webgl": "0.19.0",
     "@xterm/xterm": "6.0.0",
-    "better-sqlite3": "13.0.3",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "node-pty": "1.1.0",
-    "pino": "10.3.1",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "shadcn": "^4.19.0",
-    "tailwind-merge": "^3.6.0",
-    "tailwindcss": "^4.3.3",
-    "tw-animate-css": "^1.4.0",
-    "zod": "4.4.3",
-    "zustand": "5.0.15"
-  },
-  "build": {
-    "appId": "com.relay.harness",
-    "productName": "Relay",
-    "directories": {
-      "output": "dist",
-      "buildResources": "build"
-    },
-    "files": [
-      "out/**/*",
-      "package.json"
-    ],
-    "asarUnpack": [
-      "node_modules/better-sqlite3/**/*",
-      "node_modules/node-pty/**/*"
-    ],
-    "mac": {
-      "icon": "build/relay-app-icon.icns",
-      "category": "public.app-category.developer-tools",
-      "target": [
-        "dmg"
-      ]
-    }
-  },
-  "devDependencies": {
-    "@electron/rebuild": "4.2.0",
     "@swc/core": "1.16.1",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "44.0.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "5.0.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "shadcn": "^4.19.0",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4.3.3",
     "typescript": "7.0.2",
+    "tw-animate-css": "^1.4.0",
     "vite": "7.3.6",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "zustand": "5.0.15"
   }
 }

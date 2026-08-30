@@ -14,7 +14,7 @@ import type {
   WorktreeSnapshot
 } from '../src/shared/contracts';
 import { RelayDatabase } from '../src/main/database';
-import { planObjective, Orchestrator } from '../src/main/orchestrator';
+import { planObjective, Orchestrator, providerFailureMessage, verificationVerdict } from '../src/main/orchestrator';
 
 const temporaryDirectories: string[] = [];
 
@@ -119,7 +119,7 @@ class FakeTerminals {
   }
 }
 
-function fixture(): {
+function fixture(phaseTimeouts?: { planning?: number; worker?: number; synthesis?: number; verification?: number }): {
   database: RelayDatabase;
   worktrees: FakeWorktrees;
   terminals: FakeTerminals;
@@ -140,12 +140,21 @@ function fixture(): {
     terminals,
     detectProviders: async () => capabilities(),
     getOrchestratorConfig: () => ({ provider: 'claude', model: 'claude-opus-4-1' }),
-    onCoordinationMessage: (message) => messages.push(message)
+    onCoordinationMessage: (message) => messages.push(message),
+    phaseTimeouts
   });
   return { database, worktrees, terminals, orchestrator, messages };
 }
 
 describe('Orchestrator', () => {
+  it('turns common CLI failures into actionable recovery messages', () => {
+    expect(providerFailureMessage('Claude', { data: 'Not logged in. Run /login.', lastSequence: 1 }, 1))
+      .toContain('authentication is required');
+    expect(providerFailureMessage('Codex', { data: 'EACCES: permission denied', lastSequence: 1 }, 1))
+      .toContain('filesystem access');
+    expect(providerFailureMessage('Codex', { data: '429 rate limit exceeded', lastSequence: 1 }, 1))
+      .toContain('usage limit');
+  });
   it('decomposes one objective across Claude and Codex', () => {
     expect(planObjective('Build authentication', ['claude', 'codex'])).toMatchObject([
       { provider: 'claude', role: 'builder', deliverable: 'Working implementation' },
@@ -240,6 +249,26 @@ describe('Orchestrator', () => {
         { title: 'Validate settings', provider: 'codex', status: 'running' }
       ]
     });
+    database.close();
+  });
+
+  it('stops a timed-out planner and continues with the safe fallback', async () => {
+    const { database, terminals, orchestrator } = fixture({ planning: 10 });
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Build a small feature',
+      providers: ['claude']
+    });
+    const planning = planner(terminals).snapshot;
+    await eventually(() => terminals.stopped.includes(planning.id));
+    orchestrator.handleTerminalExit({ id: planning.id, exitCode: 143, exitedAt: Date.now() });
+    await eventually(() => workers(terminals).length === 1);
+
+    expect(database.getOrchestration(created.run.id)?.run).toMatchObject({
+      planningSource: 'fallback',
+      planningError: 'Planning timed out after 5 minutes.'
+    });
+    orchestrator.shutdown();
     database.close();
   });
 
@@ -375,6 +404,10 @@ describe('Orchestrator', () => {
     const verifying = await orchestrator.verify({ runId: created.run.id, provider: 'codex' });
     expect(verifying.run).toMatchObject({ verificationStatus: 'running', verificationProvider: 'codex' });
     expect(terminals.spawned.at(-1)?.args).toContain('read-only');
+    terminals.replayData.set(
+      verifying.run.verificationTerminalId!,
+      'All project checks passed.\nRELAY_VERDICT: PASS'
+    );
     orchestrator.handleTerminalExit({
       id: verifying.run.verificationTerminalId!,
       exitCode: 0,
@@ -386,6 +419,15 @@ describe('Orchestrator', () => {
     expect(worktrees.removed).toEqual(worktrees.created.map((worktree) => worktree.id));
     expect(cleaned.tasks.every((task) => !task.worktreeId)).toBe(true);
     database.close();
+  });
+
+  it('requires an explicit verifier verdict and preserves its failure reason', () => {
+    expect(verificationVerdict({ data: '18 tests passed\nRELAY_VERDICT: PASS', lastSequence: 1 }))
+      .toEqual({ status: 'passed' });
+    expect(verificationVerdict({ data: 'npm test failed\nRELAY_VERDICT: FAIL - two tests failed', lastSequence: 1 }))
+      .toEqual({ status: 'failed', reason: 'two tests failed' });
+    expect(verificationVerdict({ data: 'Looks fine.', lastSequence: 1 }))
+      .toEqual({ status: 'failed', reason: 'Verifier did not return a RELAY_VERDICT marker.' });
   });
 
   it('routes worker blockers through the hive and creates an approved replacement run', async () => {
@@ -414,6 +456,27 @@ describe('Orchestrator', () => {
     const nextPlanner = terminals.spawned.filter(({ snapshot }) => snapshot.role === 'planner').at(-1)!;
     expect(nextPlanner.args?.at(-1)).toContain('Previous run evidence');
     expect(messages.at(-1)).toMatchObject({ kind: 'replan', runId: created.run.id });
+    database.close();
+  });
+
+  it('re-plans integration conflicts with the conflict evidence', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Build two independent formatter utilities',
+      providers: ['claude', 'codex']
+    });
+    const conflicted = database.getOrchestration(created.run.id)!;
+    conflicted.run.status = 'completed';
+    conflicted.run.integrationStatus = 'conflict';
+    conflicted.run.integrationError = 'Conflicts in README.md';
+    database.updateOrchestrationRun(conflicted.run);
+
+    const replacement = await orchestrator.replan({ runId: created.run.id });
+    expect(replacement.run).toMatchObject({ status: 'planning', parentRunId: created.run.id });
+    expect(replacement.run.replanContext).toContain('Integration: Conflicts in README.md');
+    expect(terminals.spawned.filter(({ snapshot }) => snapshot.role === 'planner').at(-1)?.args?.at(-1))
+      .toContain('Integration: Conflicts in README.md');
     database.close();
   });
 });

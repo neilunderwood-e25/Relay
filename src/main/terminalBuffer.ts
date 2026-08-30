@@ -2,7 +2,7 @@
 export class TerminalBuffer {
   private value = '';
 
-  constructor(private readonly maxCharacters = 2 * 1024 * 1024) {
+  constructor(private readonly maxCharacters = 1024 * 1024) {
     if (!Number.isInteger(maxCharacters) || maxCharacters <= 0) {
       throw new Error('Terminal buffer size must be a positive integer');
     }

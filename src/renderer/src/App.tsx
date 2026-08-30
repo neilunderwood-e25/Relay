@@ -81,6 +81,17 @@ export function App(): React.JSX.Element {
     void window.relay.listTerminals().then(hydrate);
   }), [hydrate]);
 
+  useEffect(() => {
+    if (!startupVerified || state.status !== 'ready' || !cwd.trim()) return;
+    let cancelled = false;
+    void window.relay.ensureOrchestratorSession().then((terminal) => {
+      if (!cancelled) upsert(terminal);
+    }).catch((error) => {
+      if (!cancelled) setTerminalError(error instanceof Error ? error.message : String(error));
+    });
+    return () => { cancelled = true; };
+  }, [cwd, setTerminalError, startupVerified, state, upsert]);
+
   const refreshProviders = async (): Promise<void> => {
     if (state.status !== 'ready') return;
     try {
@@ -193,6 +204,9 @@ export function App(): React.JSX.Element {
   const runningCount = terminals.filter(
     (terminal) => terminal.role !== 'orchestrator' && terminal.status !== 'exited'
   ).length;
+  const orchestratorTerminal = terminals
+    .filter((terminal) => terminal.role === 'orchestrator')
+    .sort((left, right) => right.createdAt - left.createdAt)[0] ?? null;
   const projectName = projectNameFromPath(cwd);
 
   return (
@@ -216,6 +230,7 @@ export function App(): React.JSX.Element {
                 orchestratorName={snapshot.workspace.orchestratorName}
                 orchestratorProvider={snapshot.workspace.orchestratorProvider}
                 orchestratorModel={snapshot.workspace.orchestratorModel}
+                orchestratorTerminal={orchestratorTerminal}
                 preferences={snapshot.preferences}
                 profiles={snapshot.agentProfiles}
                 templates={snapshot.orchestrationTemplates}

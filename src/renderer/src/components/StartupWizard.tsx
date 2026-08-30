@@ -76,7 +76,7 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
   };
 
   return (
-    <main className="startup-shell">
+    <main className="startup-shell" aria-busy={busy}>
       <Card className="startup-card">
         <CardHeader className="startup-card-header">
           <div className="startup-heading">
@@ -89,7 +89,7 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
           <div className="startup-section">
             <span className="startup-label">Workspace</span>
             <div className="startup-path-list">
-              <button className={`startup-folder ${harnessHome ? 'selected' : ''}`} onClick={() => void choose('home')}>
+              <button disabled={busy} className={`startup-folder ${harnessHome ? 'selected' : ''}`} onClick={() => void choose('home')}>
                 <span className="startup-folder-icon"><Icon icon={Folder01Icon} size={17} /></span>
                 <span className="startup-folder-copy">
                   <small>Harness Home</small>
@@ -98,7 +98,7 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
                 </span>
                 <Icon icon={ArrowRight01Icon} size={14} />
               </button>
-              <button className={`startup-folder ${projectPath ? 'selected' : ''}`} onClick={() => void choose('project')}>
+              <button disabled={busy} className={`startup-folder ${projectPath ? 'selected' : ''}`} onClick={() => void choose('project')}>
                 <span className="startup-folder-icon"><Icon icon={FolderGitIcon} size={17} /></span>
                 <span className="startup-folder-copy">
                   <small>Project</small>
@@ -120,6 +120,7 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
               <div className="startup-select-field">
                 <label>Engine</label>
                 <Select
+                  disabled={busy}
                   value={provider}
                   onValueChange={(value) => {
                     setProvider(value as ProviderId);
@@ -146,6 +147,7 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
               <div className="startup-select-field">
                 <label>Model</label>
                 <Select
+                  disabled={busy}
                   value={model ?? DEFAULT_MODEL_VALUE}
                   onValueChange={(value) => setModel(value === DEFAULT_MODEL_VALUE ? null : value)}
                 >
@@ -170,7 +172,7 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
 
         <CardFooter className="startup-card-footer">
           <span className={`startup-engine-status ${selectedProvider?.available ? 'ready' : ''}`}>
-            <span />{selectedProvider?.available ? 'CLI ready' : 'CLI missing'}
+            <span />{selectedProvider?.available ? selectedProvider.version ?? 'CLI ready' : 'CLI missing'}
           </span>
           <Button
             className="startup-next"

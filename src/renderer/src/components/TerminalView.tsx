@@ -4,6 +4,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import type { TerminalDataEvent, TerminalSnapshot } from '../../../shared/contracts';
+import { ProviderEventFormatter } from '../../../shared/providerOutput';
 
 export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapshot }): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -14,7 +15,7 @@ export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapsho
 
     const terminal = new Terminal({
       allowProposedApi: true,
-      cursorBlink: true,
+      cursorBlink: snapshot.outputMode !== 'event-stream',
       cursorStyle: 'bar',
       convertEol: false,
       fontFamily: '"SFMono-Regular", "JetBrains Mono", Consolas, monospace',
@@ -68,6 +69,8 @@ export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapsho
     let replayReady = false;
     let lastSequence = 0;
     const pending: TerminalDataEvent[] = [];
+    const formatter = snapshot.outputMode === 'event-stream' ? new ProviderEventFormatter(snapshot.provider) : null;
+    const writeOutput = (data: string): void => terminal.write(formatter ? formatter.write(data) : data);
     const unsubscribeData = window.relay.onTerminalData((event) => {
       if (event.id !== snapshot.id) return;
       if (!replayReady) {
@@ -75,15 +78,16 @@ export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapsho
         return;
       }
       if (event.sequence <= lastSequence) return;
-      terminal.write(event.data);
+      writeOutput(event.data);
       lastSequence = event.sequence;
     });
     const unsubscribeExit = window.relay.onTerminalExit((event) => {
       if (event.id !== snapshot.id) return;
+      if (formatter) terminal.write(formatter.flush());
       terminal.write(`\r\n\x1b[90m[process exited ${event.exitCode}]\x1b[0m\r\n`);
     });
 
-    const input = terminal.onData((data) => {
+    const input = snapshot.outputMode === 'event-stream' ? null : terminal.onData((data) => {
       void window.relay.writeTerminal(snapshot.id, data).then((result) => {
         if (!result.ok) terminal.write(`\r\n\x1b[31m[input failed: ${result.error}]\x1b[0m\r\n`);
       });
@@ -106,16 +110,17 @@ export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapsho
     });
 
     void window.relay.getTerminalReplay(snapshot.id).then((replay) => {
-      terminal.write(replay.data);
+      writeOutput(replay.data);
       lastSequence = replay.lastSequence;
       replayReady = true;
       for (const event of pending.sort((left, right) => left.sequence - right.sequence)) {
         if (event.sequence <= lastSequence) continue;
-        terminal.write(event.data);
+        writeOutput(event.data);
         lastSequence = event.sequence;
       }
       pending.length = 0;
       if (snapshot.status === 'exited') {
+        if (formatter) terminal.write(formatter.flush());
         terminal.write(`\r\n\x1b[90m[process exited ${snapshot.exitCode ?? 'unknown'}]\x1b[0m\r\n`);
       }
       fitAndResize();
@@ -128,7 +133,7 @@ export function TerminalView({ terminal: snapshot }: { terminal: TerminalSnapsho
       resizeObserver.disconnect();
       unsubscribeData();
       unsubscribeExit();
-      input.dispose();
+      input?.dispose();
       webgl?.dispose();
       terminal.dispose();
     };

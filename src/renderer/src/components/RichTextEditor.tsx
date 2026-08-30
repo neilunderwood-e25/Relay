@@ -126,11 +126,11 @@ export function RichTextEditor({ value, disabled, onChange, onSubmit }: {
         className="rich-editor-field"
         contentEditable={!disabled}
         role="textbox"
-        aria-label="Coding objective"
+        aria-label="Orchestrator input"
         aria-multiline="true"
         aria-disabled={disabled}
         data-empty={empty}
-        data-placeholder="What should the team deliver?"
+        data-placeholder="What should happen?"
         suppressContentEditableWarning
         onInput={emit}
         onFocus={refreshFormats}

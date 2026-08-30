@@ -19,11 +19,14 @@ import { providerAdapter } from './providerAdapters';
 import { TerminalBuffer } from './terminalBuffer';
 
 const MAX_LIVE_TERMINALS = 12;
+const MAX_RETAINED_TERMINALS = 64;
 const MIN_COLS = 20;
 const MAX_COLS = 500;
 const MIN_ROWS = 5;
 const MAX_ROWS = 300;
 const FORCE_KILL_AFTER_MS = 2500;
+const MAX_SUBMISSION_BYTES = 128 * 1024;
+const SUBMISSION_ENTER_DELAY_MS = 80;
 
 interface TerminalSession {
   snapshot: TerminalSnapshot;
@@ -41,6 +44,7 @@ export interface PtyManagerOptions {
 
 export class PtyManager {
   private readonly sessions = new Map<string, TerminalSession>();
+  private orchestratorSpawn: Promise<TerminalSnapshot> | null = null;
 
   constructor(private readonly options: PtyManagerOptions) {}
 
@@ -57,7 +61,20 @@ export class PtyManager {
         (session) => session.snapshot.role === 'orchestrator' && session.pty !== null
       );
       if (existing) return { ...existing.snapshot };
+      if (this.orchestratorSpawn) return this.orchestratorSpawn;
+      const pending = this.spawnSession(request);
+      this.orchestratorSpawn = pending;
+      try {
+        return await pending;
+      } finally {
+        if (this.orchestratorSpawn === pending) this.orchestratorSpawn = null;
+      }
     }
+    return this.spawnSession(request);
+  }
+
+  private async spawnSession(request: TerminalSpawnRequest): Promise<TerminalSnapshot> {
+    this.pruneExitedSessions();
     const liveCount = [...this.sessions.values()].filter((session) => session.pty !== null).length;
     if (liveCount >= MAX_LIVE_TERMINALS) {
       throw new Error(`The terminal limit of ${MAX_LIVE_TERMINALS} has been reached.`);
@@ -100,7 +117,8 @@ export class PtyManager {
         createdAt,
         lastOutputAt: 0,
         hasOutput: false,
-        lastSequence: 0
+        lastSequence: 0,
+        outputMode: request.outputMode ?? 'terminal'
       },
       pty: child,
       buffer: new TerminalBuffer(),
@@ -138,6 +156,35 @@ export class PtyManager {
       .then(() => {
         if (session.pty !== target) throw new Error(`Terminal exited before input could be delivered: ${id}`);
         target.write(data);
+      });
+    session.writeTail = next;
+
+    try {
+      await next;
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async submit(id: string, text: string): Promise<OperationResult> {
+    if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'No terminal submission was provided.' };
+    if (Buffer.byteLength(text, 'utf8') > MAX_SUBMISSION_BYTES) {
+      return { ok: false, error: 'Terminal submission exceeds the 128 KB limit.' };
+    }
+    const session = this.sessions.get(id);
+    if (!session?.pty) return { ok: false, error: `Terminal is not running: ${id}` };
+    const target = session.pty;
+    const payload = text.includes('\n') ? `\x1b[200~${text}\x1b[201~` : text;
+
+    const next = session.writeTail
+      .catch(() => undefined)
+      .then(async () => {
+        if (session.pty !== target) throw new Error(`Terminal exited before input could be delivered: ${id}`);
+        target.write(payload);
+        await delay(SUBMISSION_ENTER_DELAY_MS);
+        if (session.pty !== target) throw new Error(`Terminal exited before input could be submitted: ${id}`);
+        target.write('\r');
       });
     session.writeTail = next;
 
@@ -198,6 +245,17 @@ export class PtyManager {
       if (session.pty) this.killProcessTree(session, 'SIGKILL');
       if (session.forceKillTimer) clearTimeout(session.forceKillTimer);
       session.forceKillTimer = null;
+    }
+  }
+
+  private pruneExitedSessions(): void {
+    if (this.sessions.size < MAX_RETAINED_TERMINALS) return;
+    const exited = [...this.sessions.values()]
+      .filter((session) => session.pty === null)
+      .sort((left, right) => (left.snapshot.exitedAt ?? 0) - (right.snapshot.exitedAt ?? 0));
+    for (const session of exited) {
+      if (this.sessions.size < MAX_RETAINED_TERMINALS) break;
+      this.sessions.delete(session.snapshot.id);
     }
   }
 
@@ -269,6 +327,9 @@ export class PtyManager {
     if (request.avatarSeed !== undefined && (typeof request.avatarSeed !== 'string' || request.avatarSeed.length > 128)) {
       throw new Error('Avatar seeds must be at most 128 characters.');
     }
+    if (request.outputMode !== undefined && !['terminal', 'event-stream'].includes(request.outputMode)) {
+      throw new Error('Unsupported terminal output mode.');
+    }
     if (request.args !== undefined) {
       if (!Array.isArray(request.args) || request.args.length > 64) throw new Error('Too many terminal arguments.');
       if (request.args.some((arg) => typeof arg !== 'string' || arg.length > 4096)) {
@@ -278,10 +339,21 @@ export class PtyManager {
   }
 }
 
-function terminalEnvironment(): Record<string, string> {
+const TERMINAL_ENV_KEYS = new Set([
+  'HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'TMPDIR', 'TMP', 'TEMP',
+  'LANG', 'LC_ALL', 'LC_CTYPE', 'SSH_AUTH_SOCK',
+  'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+  'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'
+]);
+
+export function terminalEnvironment(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const environment: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === 'string') environment[key] = value;
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === 'string' && (TERMINAL_ENV_KEYS.has(key) || key.startsWith('LC_'))) {
+      environment[key] = value;
+    }
   }
   environment.TERM = 'xterm-256color';
   environment.COLORTERM = 'truecolor';
@@ -300,4 +372,8 @@ function cleanName(value: string | undefined): string {
 
 function cleanSeed(value: string | undefined): string {
   return (value ?? '').trim().replace(/[\r\n\t]+/g, '-').slice(0, 128);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

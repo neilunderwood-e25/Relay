@@ -1,0 +1,42 @@
+import { describe, expect, it } from 'vitest';
+import { extractProviderResult, ProviderEventFormatter } from '../src/shared/providerOutput';
+
+describe('provider event output', () => {
+  it('formats chunked Claude events as readable live activity', () => {
+    const formatter = new ProviderEventFormatter('claude');
+    const init = JSON.stringify({ type: 'system', subtype: 'init', model: 'opus' });
+    const tool = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: 'src/app.ts' } }] }
+    });
+    const result = JSON.stringify({ type: 'result', subtype: 'success', result: 'Finished the task.' });
+
+    expect(formatter.write(`${init}\n${tool.slice(0, 20)}`)).toContain('Claude connected · opus');
+    expect(formatter.write(`${tool.slice(20)}\n${result}\n`)).toContain('Read src/app.ts');
+    expect(formatter.write('')).toBe('');
+    expect(extractProviderResult('claude', `${init}\n${tool}\n${result}\n`)).toBe('Finished the task.');
+  });
+
+  it('formats Codex commands and extracts its final agent message', () => {
+    const events = [
+      { type: 'thread.started', thread_id: 'thread-1' },
+      { type: 'turn.started' },
+      { type: 'item.started', item: { id: 'item-1', type: 'command_execution', command: 'npm test' } },
+      { type: 'item.completed', item: { id: 'item-1', type: 'command_execution', command: 'npm test', exit_code: 0 } },
+      { type: 'item.completed', item: { id: 'item-2', type: 'agent_message', text: 'All tests pass.' } },
+      { type: 'turn.completed' }
+    ].map((event) => JSON.stringify(event)).join('\n') + '\n';
+    const formatter = new ProviderEventFormatter('codex');
+    const formatted = formatter.write(events);
+
+    expect(formatted).toContain('Codex connected');
+    expect(formatted).toContain('Run npm test');
+    expect(formatted).toContain('Command finished');
+    expect(formatted).toContain('All tests pass.');
+    expect(extractProviderResult('codex', events)).toBe('All tests pass.');
+  });
+
+  it('leaves ordinary terminal output intact when no event stream was produced', () => {
+    expect(extractProviderResult('claude', 'Authentication failed')).toBe('Authentication failed');
+  });
+});

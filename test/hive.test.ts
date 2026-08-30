@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -32,8 +32,16 @@ describe('HiveManager', () => {
       'registry.json',
       'log.jsonl',
       'messages.jsonl',
+      'control/inbox',
+      'control/.done',
+      'control/outbox/.processing',
+      'control/outbox/.done',
+      'control/results',
+      'control/actions',
       'agents/orchestrator/identity.md',
       'agents/orchestrator/memory.md',
+      'agents/orchestrator/history.jsonl',
+      'agents/orchestrator/context.md',
       'agents/orchestrator/cursor.json',
       'agents/orchestrator/inbox/.done',
       'agents/orchestrator/outbox/.sent'
@@ -46,6 +54,17 @@ describe('HiveManager', () => {
     expect(hive.ensure().ready).toBe(true);
     expect(readFileSync(memoryPath, 'utf8')).toBe('# durable memory\n');
     expect(readFileSync(boardPath, 'utf8')).toBe('# Relay board\n\n_Michael owns this shared plan._\n');
+  });
+
+  it('refuses symlinked Relay-owned Hive directories', () => {
+    const { root, hive } = fixture();
+    const outside = join(root, 'outside-control');
+    mkdirSync(hive.root, { recursive: true });
+    mkdirSync(outside);
+    symlinkSync(outside, join(hive.root, 'control'));
+
+    expect(hive.ensure()).toMatchObject({ ready: false });
+    expect(hive.health().error).toContain('Unsafe Hive directory');
   });
 
   it('records the selected orchestrator engine', () => {
@@ -123,6 +142,95 @@ describe('HiveManager', () => {
 
     expect(readFileSync(join(hive.root, 'messages.jsonl'), 'utf8')).toContain('Generated SDK is missing. Please regenerate it.');
     expect(readFileSync(join(hive.agentRoot, 'inbox', '200-message-1.json'), 'utf8')).toContain('"kind": "blocker"');
+  });
+
+  it('persists Relay control commands for Michael', () => {
+    const { hive } = fixture();
+    hive.ensure();
+    const path = hive.enqueueControl({
+      version: 1,
+      id: 'control-test-1',
+      kind: 'run.started',
+      actor: 'human',
+      createdAt: 300,
+      projectPath: '/repo',
+      runId: 'run-1',
+      objective: 'Build the API',
+      strategy: 'balanced',
+      payload: { concurrency: 2 }
+    });
+
+    expect(path).toBe(join(hive.root, 'control', 'inbox', '300-control-test-1.json'));
+    expect(readFileSync(path, 'utf8')).toContain('"kind": "run.started"');
+    expect(readFileSync(join(hive.root, 'log.jsonl'), 'utf8')).toContain('"kind":"control.queued"');
+    expect(hive.pendingControlCommands()).toHaveLength(1);
+    writeFileSync(join(hive.root, 'control', '.done', 'control-test-1.json'), '{}', 'utf8');
+    expect(hive.pendingControlCommands()).toHaveLength(0);
+  });
+
+  it('projects durable recent context without replacing curated memory', () => {
+    const { hive } = fixture();
+    hive.ensure();
+    const memoryPath = join(hive.agentRoot, 'memory.md');
+    writeFileSync(memoryPath, '# Curated decision\n', 'utf8');
+
+    hive.appendMemory({ id: 'input:1', kind: 'input', summary: 'Build the recovery flow', createdAt: 100 });
+    hive.appendMemory({ id: 'input:1', kind: 'input', summary: 'Duplicate', createdAt: 101 });
+
+    expect(readFileSync(memoryPath, 'utf8')).toBe('# Curated decision\n');
+    expect(readFileSync(join(hive.agentRoot, 'history.jsonl'), 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(readFileSync(join(hive.agentRoot, 'context.md'), 'utf8')).toContain('Build the recovery flow');
+  });
+
+  it('quarantines an action left executing across a restart', () => {
+    const { root, hive } = fixture();
+    hive.ensure();
+    const action = {
+      version: 1 as const,
+      id: 'action-recovery-1',
+      kind: 'run.create' as const,
+      createdAt: 100,
+      objective: 'Build it',
+      strategy: 'balanced' as const,
+      providers: ['claude' as const],
+      concurrency: 1
+    };
+
+    expect(hive.prepareControlAction(action)).toBeNull();
+    const restarted = new HiveManager(join(root, 'hive'), 'Michael');
+    restarted.ensure();
+
+    expect(restarted.prepareControlAction(action)).toMatchObject({
+      actionId: action.id,
+      status: 'rejected'
+    });
+  });
+
+  it('claims Michael actions and persists immutable results', () => {
+    const { hive } = fixture();
+    hive.ensure();
+    const outboxPath = join(hive.root, 'control', 'outbox', 'action-input-1.json');
+    writeFileSync(outboxPath, JSON.stringify({
+      version: 1,
+      id: 'action-input-1',
+      kind: 'run.create',
+      createdAt: 100
+    }), 'utf8');
+
+    const [claim] = hive.claimControlActions();
+    expect(claim.fileName).toBe('action-input-1.json');
+    expect(existsSync(outboxPath)).toBe(false);
+    hive.completeControlAction(claim, {
+      version: 1,
+      actionId: 'action-input-1',
+      kind: 'run.create',
+      status: 'completed',
+      completedAt: 200,
+      runId: 'run-1'
+    });
+
+    expect(existsSync(join(hive.root, 'control', 'outbox', '.done', claim.fileName))).toBe(true);
+    expect(readFileSync(join(hive.root, 'control', 'results', 'action-input-1.json'), 'utf8')).toContain('"runId": "run-1"');
   });
 });
 

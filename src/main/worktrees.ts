@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, stat } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
+import { appendFile, mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Logger } from 'pino';
 import type {
@@ -191,9 +192,15 @@ export class WorktreeManager {
       throw new Error('Choose a valid local base branch.');
     }
 
-    const repoDirectory = `${basename(repository.mainRoot)}-${shortHash(repository.mainRoot)}`;
-    const worktreePath = resolve(this.storageRoot, repoDirectory, slug);
-    if (!isWithin(this.storageRoot, worktreePath)) throw new Error('Worktree path escaped managed storage.');
+    const projectStorageRoot = this.projectStorageRoot(repository.mainRoot);
+    await mkdir(projectStorageRoot, { recursive: true });
+    const canonicalRepositoryRoot = await realpath(repository.mainRoot);
+    const canonicalStorageRoot = await realpath(projectStorageRoot);
+    if (canonicalStorageRoot !== resolve(canonicalRepositoryRoot, '.relay', 'worktrees')) {
+      throw new Error('Refusing a managed worktree folder that resolves outside the project.');
+    }
+    const worktreePath = resolve(canonicalStorageRoot, slug);
+    if (!isWithin(projectStorageRoot, worktreePath)) throw new Error('Worktree path escaped managed storage.');
     const existing = this.options.database.listWorktrees(repository.mainRoot);
     if (existing.some((record) => resolve(record.path) === worktreePath || record.branch === branch)) {
       throw new Error('A managed worktree already uses this name.');
@@ -204,7 +211,7 @@ export class WorktreeManager {
     const branchCheck = await runGit(repository.mainRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
     if (branchCheck.ok) throw new Error(`Branch ${branch} already exists.`);
 
-    await mkdir(dirname(worktreePath), { recursive: true });
+    await this.ensureProjectWorktreeIgnore(repository.mainRoot);
     const addResult = await runGit(repository.mainRoot, [
       'worktree', 'add', '--no-track', '-b', branch, worktreePath, baseBranch
     ]);
@@ -246,8 +253,8 @@ export class WorktreeManager {
   private async removeNow(request: WorktreeRemoveRequest): Promise<OperationResult> {
     if (!request || typeof request.id !== 'string') return { ok: false, error: 'Invalid worktree id.' };
     const record = this.options.database.getWorktree(request.id);
-    if (!record) return { ok: false, error: 'Managed worktree was not found.' };
-    if (!isWithin(this.storageRoot, resolve(record.path))) {
+    if (!record) return this.removeExternalNow(request);
+    if (!this.isManagedStoragePath(record.path, record.repoRoot)) {
       return { ok: false, error: 'Refusing to remove a path outside managed storage.' };
     }
 
@@ -278,6 +285,43 @@ export class WorktreeManager {
     this.options.database.deleteWorktree(record.id);
     this.options.database.appendEvent('worktree.removed', record);
     this.options.logger.info({ worktreeId: record.id, path: record.path }, 'Worktree removed');
+    return { ok: true };
+  }
+
+  private async removeExternalNow(request: WorktreeRemoveRequest): Promise<OperationResult> {
+    if (typeof request.repoPath !== 'string' || !isAbsolute(request.repoPath)) {
+      return { ok: false, error: 'The worktree is no longer registered with Relay.' };
+    }
+    const repository = await this.inspect(request.repoPath);
+    if (!repository.isRepository || !repository.mainRoot) {
+      return { ok: false, error: repository.error ?? 'Choose a Git repository first.' };
+    }
+    const worktree = repository.worktrees.find((candidate) => candidate.id === request.id);
+    if (!worktree) return { ok: false, error: 'The worktree is no longer registered with Git.' };
+    if (worktree.isMain) return { ok: false, error: 'The main checkout cannot be removed.' };
+    if (worktree.status === 'locked') return { ok: false, error: 'Unlock the worktree before removing it.' };
+    if (worktree.status === 'missing') {
+      const pruneResult = await runGit(repository.mainRoot, ['worktree', 'prune']);
+      if (!pruneResult.ok) return { ok: false, error: gitError(pruneResult) };
+      this.options.database.appendEvent('worktree.external_forgotten', {
+        path: worktree.path,
+        branch: worktree.branch
+      });
+      return { ok: true };
+    }
+    if (worktree.dirty && !request.force) {
+      return { ok: false, error: 'Worktree has uncommitted changes.' };
+    }
+
+    const args = ['worktree', 'remove', ...(request.force ? ['--force'] : []), worktree.path];
+    const removeResult = await runGit(repository.mainRoot, args);
+    if (!removeResult.ok) return { ok: false, error: gitError(removeResult) };
+    await runGit(repository.mainRoot, ['worktree', 'prune']);
+    this.options.database.appendEvent('worktree.external_removed', {
+      path: worktree.path,
+      branch: worktree.branch
+    });
+    this.options.logger.info({ path: worktree.path, branch: worktree.branch }, 'External worktree removed');
     return { ok: true };
   }
 
@@ -380,7 +424,7 @@ export class WorktreeManager {
       isMain: worktreePath === resolve(mainRoot),
       dirty,
       ahead,
-      status: worktree.locked ? 'locked' : dirty ? 'dirty' : 'ready'
+      status: worktree.prunable ? 'missing' : worktree.locked ? 'locked' : dirty ? 'dirty' : 'ready'
     };
   }
 
@@ -394,10 +438,37 @@ export class WorktreeManager {
     if (typeof id !== 'string') throw new Error('Invalid worktree id.');
     const record = this.options.database.getWorktree(id);
     if (!record) throw new Error('Managed worktree was not found.');
-    if (!isWithin(this.storageRoot, resolve(record.path))) {
+    if (!this.isManagedStoragePath(record.path, record.repoRoot)) {
       throw new Error('Refusing to access a path outside managed storage.');
     }
     return record;
+  }
+
+  private projectStorageRoot(repoRoot: string): string {
+    return resolve(repoRoot, '.relay', 'worktrees');
+  }
+
+  private isManagedStoragePath(path: string, repoRoot: string): boolean {
+    const candidate = canonicalExistingPath(path);
+    return isWithin(canonicalExistingPath(this.projectStorageRoot(repoRoot)), candidate)
+      || isWithin(canonicalExistingPath(this.storageRoot), candidate);
+  }
+
+  private async ensureProjectWorktreeIgnore(repoRoot: string): Promise<void> {
+    const result = await runGit(repoRoot, [
+      'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'
+    ]);
+    if (!result.ok || !result.stdout.trim()) throw new Error('Could not locate the local Git exclude file.');
+    const excludePath = resolve(result.stdout.trim());
+    const pattern = '/.relay/worktrees/';
+    const current = await readFile(excludePath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return '';
+      throw error;
+    });
+    if (current.split(/\r?\n/).some((line) => line.trim() === pattern)) return;
+    await mkdir(dirname(excludePath), { recursive: true });
+    const prefix = current.length > 0 && !current.endsWith('\n') ? '\n' : '';
+    await appendFile(excludePath, `${prefix}# Relay managed worktrees\n${pattern}\n`, 'utf8');
   }
 
   private async mergeBase(record: WorktreeRecord): Promise<string> {
@@ -478,6 +549,11 @@ function isWithin(parent: string, candidate: string): boolean {
   return rel.length > 0 && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
+function canonicalExistingPath(path: string): string {
+  const candidate = resolve(path);
+  return existsSync(candidate) ? realpathSync.native(candidate) : candidate;
+}
+
 function shortHash(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 10);
 }
@@ -524,10 +600,10 @@ function parseNumstat(output: string, statuses: Map<string, TaskDiffFile['status
 
 function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
   return new Promise((resolveResult) => {
-    const child = spawn('git', args, {
+    const child = spawn('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
       cwd,
       shell: false,
-      env: process.env,
+      env: gitEnvironment(),
       stdio: ['ignore', 'pipe', 'pipe']
     });
     let stdout = '';
@@ -550,4 +626,13 @@ function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promis
     child.on('error', (error) => finish({ ok: false, code: null, stdout, stderr: error.message }));
     child.on('close', (code) => finish({ ok: code === 0, code, stdout, stderr }));
   });
+}
+
+function gitEnvironment(): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: '0' };
+  for (const key of ['HOME', 'USER', 'LOGNAME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'SSH_AUTH_SOCK']) {
+    const value = process.env[key];
+    if (value) environment[key] = value;
+  }
+  return environment;
 }

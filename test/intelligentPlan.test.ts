@@ -64,6 +64,9 @@ describe('intelligent planning', () => {
     });
     expect(prompt).toContain('Do not modify files or Git state.');
     expect(prompt).toContain('Return exactly one JSON object');
+    expect(prompt).toContain('cannot see another task\'s edits');
+    expect(prompt).toContain('Never create a review');
+    expect(prompt).toContain('No two tasks may edit the same file');
     expect(prompt).toContain('profile-avery');
     expect(prompt.length).toBeLessThanOrEqual(4_000);
   });
