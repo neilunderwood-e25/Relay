@@ -79,6 +79,10 @@ export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch
       });
       setName('');
       await refresh();
+      const ideResult = await window.relay.openIdeWorkspace(repository?.mainRoot ?? cwd);
+      if (!ideResult.ok) {
+        setError(ideResult.error ?? 'Worktree created, but the IDE workspace could not be opened.');
+      }
     } catch (cause) {
       setError(messageOf(cause));
     } finally {

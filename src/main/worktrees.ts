@@ -176,7 +176,7 @@ export class WorktreeManager {
       if (!resolved) {
         return { ok: false, error: 'Install Cursor or Visual Studio Code, or add its CLI to PATH.' };
       }
-      await launchDetached(resolved.executable, ['--new-window', workspacePath]);
+      await launchDetached(resolved.executable, ['--reuse-window', workspacePath]);
       this.options.database.appendEvent('ide.workspace.opened', {
         ide: resolved.ide,
         workspacePath

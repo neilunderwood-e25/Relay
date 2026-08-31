@@ -81,6 +81,7 @@ describe('renderer design-system contract', () => {
     const activity = read('src/renderer/src/components/ActivityWorkspace.tsx');
     const settings = read('src/renderer/src/components/SettingsWorkspace.tsx');
     const worktrees = read('src/renderer/src/components/WorktreesWorkspace.tsx');
+    const worktreeManager = read('src/main/worktrees.ts');
 
     expect(activity).toContain("from './ui/dialog'");
     expect(activity).toContain('window.relay.listActivity');
@@ -91,6 +92,9 @@ describe('renderer design-system contract', () => {
     expect(worktrees).toContain("{baseBranch || 'No commits'}");
     expect(worktrees).toContain('window.relay.openIdeWorkspace');
     expect(worktrees).toContain('aria-label="Open IDE workspace"');
+    expect(worktrees).toContain('Worktree created, but the IDE workspace could not be opened.');
+    expect(worktreeManager).toContain("['--reuse-window', workspacePath]");
+    expect(worktreeManager).not.toContain("['--new-window', workspacePath]");
   });
 
   it('retains compact-window layout rules without crushing terminal controls', () => {
