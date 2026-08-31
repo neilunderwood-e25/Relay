@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Introducing Relay: many coding agents, one orchestrator — Relay blog</title>
+    <meta
+      name="description"
+      content="Relay is a local-first desktop multi-agent coding harness. It drives the Claude Code and Codex CLI clients you already installed, against a Git project you already have on disk."
+    />
+    <link rel="icon" href="../assets/logo.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/rss+xml" title="Relay blog" href="../feed.xml" />
+    <link rel="stylesheet" href="../assets/relay-site.css" />
+    <link rel="stylesheet" href="../assets/relay-blog.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <a class="brand" href="../index.html">
+          <img src="../assets/logo.svg" alt="" width="30" height="30" />
+          <span>Relay</span>
+          <small>v0.1.0</small>
+        </a>
+
+        <nav class="site-nav" id="site-nav" aria-label="Primary">
+          <a href="../index.html">Overview</a>
+          <a href="../features.html">Features</a>
+          <a href="../docs.html">Docs</a>
+          <a href="../blog.html">Blog</a>
+        </nav>
+
+        <div class="header-tools">
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Switch theme">☀</button>
+          <button
+            class="icon-button nav-toggle"
+            type="button"
+            data-nav-toggle
+            aria-controls="site-nav"
+            aria-label="Toggle navigation"
+          >
+            ☰
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <article class="article">
+        <div class="shell">
+          <a class="back-link" href="../blog.html">&larr; Back to blog</a>
+
+          <header class="article__head">
+            <span class="eyebrow">Overview</span>
+            <h1>Introducing Relay: many coding agents, one orchestrator</h1>
+            <p class="article__meta">
+              <time datetime="2026-08-29">29 August 2026</time>
+              <span>Milestones 01–17</span>
+            </p>
+            <p class="article__standfirst">
+              Relay is a local-first desktop multi-agent coding harness. You give it an objective; Michael —
+              the default orchestrator — plans bounded work for Claude Code and Codex CLI workers that run in
+              isolated Git worktrees on a single coding project.
+            </p>
+          </header>
+
+          <div class="article__body">
+            <h2>A harness, not a service</h2>
+            <p>
+              Relay is an Electron desktop app you build and run yourself. There is no Relay account, no Relay
+              backend, and no telemetry endpoint in the app. It drives the provider CLI clients you already
+              installed and authenticated, against a Git repository you already have on disk, and provider
+              authentication stays wherever Claude Code and Codex CLI already keep it.
+            </p>
+            <p>
+              That shapes the prerequisites: Node.js 22 or newer, npm, Git, and Claude Code and/or Codex CLI on
+              your <code>PATH</code>. One provider is enough to start. Both are needed for the real-CLI tests
+              and for mixed Claude + Codex runs.
+            </p>
+
+            <h2>What a run looks like</h2>
+            <p>
+              You write one objective and pick a run mode. <b>Build</b> mode assigns an implementation owner
+              and an independent reviewer. <b>Split</b> mode turns newline- or semicolon-separated instructions
+              into parallel workstreams. <b>Audit</b> mode asks each worker for an independent,
+              evidence-backed investigation.
+            </p>
+            <p>
+              The objective is persisted before delivery, then handed to Michael's shared session. Michael
+              inspects it in a read-only planning mode and returns a validated plan of one to four tasks, each
+              with an explicit role, assignment, and expected deliverable. Every task then receives a dedicated
+              <code>relay/orchestrator-*</code> branch and a managed worktree, so Claude and Codex can work
+              concurrently without ever touching your main checkout.
+            </p>
+            <p>
+              When the workers finish you inspect a bounded per-file diff, accept or reject every task, and
+              only then does Relay squash accepted work onto your checked-out base branch — followed by
+              read-only verification through an available CLI, and cleanup of worktrees whose branches are left
+              intact for recovery.
+            </p>
+
+            <h2>The parts that make it reviewable</h2>
+            <ul>
+              <li>
+                <b>Provider adapter registry.</b> One contract covers discovery, worker launch, and read-only
+                verification across Claude Code and Codex.
+              </li>
+              <li>
+                <b>SQLite persistence.</b> Runs, tasks, reviews, verification reports, and an append-only
+                event ledger survive restarts; interrupted work is surfaced as blocked.
+              </li>
+              <li>
+                <b>Durable control protocol.</b> Bidirectional inbox/outbox files with an allowlisted action
+                set, durable receipts, and replay after a crash.
+              </li>
+              <li>
+                <b>Structured logs.</b> Run, Git, terminal, and system events are filterable in Activity and
+                readable outside the UI.
+              </li>
+              <li>
+                <b>node-pty supervisor.</b> Real interactive terminals with bounded replay buffers, watchdog
+                timeouts, and forced shutdown on exit.
+              </li>
+            </ul>
+            <p>
+              The Electron main process owns every privileged operation. The React renderer has no direct Node
+              access and reaches the filesystem, database, Git, PTYs, and provider CLIs only through narrow
+              typed IPC contracts.
+            </p>
+
+            <h2>Where the boundary sits</h2>
+            <p>
+              Relay is developed and verified as a local build. macOS signing, notarization, hardened runtime,
+              and public distribution are intentionally deferred, so there is no downloadable release. You can
+              produce an unsigned macOS bundle or unsigned DMG and ZIP artifacts locally, but they carry no
+              signing identity, notarization ticket, or Gatekeeper assessment — another Mac may warn or refuse
+              to open them until that work is done.
+            </p>
+            <p>
+              The <a href="../docs.html">docs</a> cover the dev loop, the verification gates, and the workspace
+              Relay creates. The <a href="../features.html">features page</a> goes subsystem by subsystem.
+            </p>
+
+            <div class="article__source">
+              <p>
+                Sources: <code>README.md</code> (positioning, prerequisites, architecture, lifecycle) and
+                <code>RELEASE_CHECKLIST.md</code> (unsigned package, deferred distribution work).
+              </p>
+            </div>
+          </div>
+
+          <nav class="article__nav" aria-label="Post navigation">
+            <a class="button button--ghost" href="../blog.html">&larr; All posts</a>
+            <a class="button button--primary" href="inside-the-orchestrator.html">Next: how Michael plans a run &rarr;</a>
+          </nav>
+        </div>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell site-footer__inner">
+        <span>Relay <code>0.1.0</code> · a desktop multi-agent coding harness orchestrated by Michael.</span>
+        <nav aria-label="Footer">
+          <a href="../index.html">Overview</a>
+          <a href="../features.html">Features</a>
+          <a href="../docs.html">Docs</a>
+          <a href="../blog.html">Blog</a>
+          <a href="../docs.html#release-boundary">Release status</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script src="../assets/relay-site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Inside the orchestrator: how Michael plans a run — Relay blog</title>
+    <meta
+      name="description"
+      content="Michael plans every Relay run in a read-only mode, returns a validated one-to-four task plan, routes worker blockers, and falls back to a deterministic plan instead of stranding the run."
+    />
+    <link rel="icon" href="../assets/logo.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/rss+xml" title="Relay blog" href="../feed.xml" />
+    <link rel="stylesheet" href="../assets/relay-site.css" />
+    <link rel="stylesheet" href="../assets/relay-blog.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <a class="brand" href="../index.html">
+          <img src="../assets/logo.svg" alt="" width="30" height="30" />
+          <span>Relay</span>
+          <small>v0.1.0</small>
+        </a>
+
+        <nav class="site-nav" id="site-nav" aria-label="Primary">
+          <a href="../index.html">Overview</a>
+          <a href="../features.html">Features</a>
+          <a href="../docs.html">Docs</a>
+          <a href="../blog.html">Blog</a>
+        </nav>
+
+        <div class="header-tools">
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Switch theme">☀</button>
+          <button
+            class="icon-button nav-toggle"
+            type="button"
+            data-nav-toggle
+            aria-controls="site-nav"
+            aria-label="Toggle navigation"
+          >
+            ☰
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <article class="article">
+        <div class="shell">
+          <a class="back-link" href="../blog.html">&larr; Back to blog</a>
+
+          <header class="article__head">
+            <span class="eyebrow">Orchestration</span>
+            <h1>Inside the orchestrator: how Michael plans a run</h1>
+            <p class="article__meta">
+              <time datetime="2026-08-30">30 August 2026</time>
+              <span>Intelligent orchestration</span>
+            </p>
+            <p class="article__standfirst">
+              Michael is the default orchestrator, and the interesting part is not that a model writes the
+              plan — it is everything Relay does around that plan so a bad answer cannot break your project or
+              strand a run.
+            </p>
+          </header>
+
+          <div class="article__body">
+            <h2>Planning is read-only by construction</h2>
+            <p>
+              Every new run starts in a persisted planning state and launches Michael through the engine and
+              model selected at startup. Planning runs in Claude plan mode or the Codex read-only sandbox, so
+              the planning phase cannot modify the repository at all. That is a property of the mode the CLI is
+              launched in, not a promise about model behaviour.
+            </p>
+            <p>
+              Michael's session also runs from the Hive workspace rather than your main checkout. Claude starts
+              in restricted safe mode with its file tools confined to the Hive; Codex uses its workspace-write
+              sandbox rooted in the Hive. Relay remains the sole owner of worker launch, worktrees, review,
+              integration, verification, and cleanup.
+            </p>
+
+            <h2>What Michael receives, and what it must return</h2>
+            <p>
+              Michael is given the objective, the run mode, the available providers, and the eligible
+              saved-agent roster. It returns a JSON plan of one to four tasks. Relay then validates every
+              title, role, deliverable, provider, and profile assignment <em>before</em> creating any
+              worktrees.
+            </p>
+            <p>
+              If the output is invalid, the planner is missing, or the planner process exits non-zero, Relay
+              automatically produces a deterministic fallback plan instead of stranding the run. The planner
+              transcript stays available in Console, and the monitor shows the plan source, the rationale, and
+              any fallback error — so a fallback is visible rather than silent.
+            </p>
+
+            <h2>Blockers become routed messages, not dead ends</h2>
+            <p>
+              Workers can emit a bounded <code>RELAY_BLOCKER</code> report. Relay turns that into a blocked
+              task plus a durable message in Michael's hive inbox and its <code>messages.jsonl</code> stream.
+              Failed, blocked, or stopped runs expose an explicit <b>Re-plan</b> action that creates a fresh
+              model-planned run without mutating historical results; the re-plan keeps a parent-run link and
+              sends the prior blocker evidence to Michael, so replacement tasks address the failed approach
+              instead of repeating it.
+            </p>
+
+            <h2>Actions cross a durable boundary</h2>
+            <p>
+              Michael can answer in the terminal or request a Monitor action through
+              <code>control/outbox/</code>. Relay accepts only the documented version-1 action allowlist and
+              validates every identifier, provider, strategy, decision, and concurrency value in the main
+              process. Malformed, unknown, or out-of-bounds actions produce durable rejected receipts.
+            </p>
+            <p>
+              Each accepted action crosses a durable <code>control/actions/</code> execution boundary before
+              Relay mutates state. A completed receipt is reused rather than re-run, and an action left
+              <code>executing</code> by a crash is quarantined and reported for inspection instead of being
+              executed a second time. Control commands themselves stay immutable in
+              <code>control/inbox/</code>; commands without a matching acknowledgment are replayed after a
+              restart, without replacing their audit files.
+            </p>
+
+            <h2>Memory that Relay does not overwrite</h2>
+            <p>
+              <code>memory.md</code> is Michael's curated long-term memory, and Relay never replaces it. Human
+              inputs, final run states, action outcomes, and recovery events are deduplicated into the
+              append-only <code>history.jsonl</code> journal; Relay projects the latest 30 entries into
+              <code>context.md</code>, and every fresh Michael session reads both files before accepting work.
+              Renaming the orchestrator updates its identity and registry without moving its stable folder.
+            </p>
+
+            <h2>Closing the loop</h2>
+            <p>
+              After the workers finish, Michael runs in a read-only synthesis terminal and publishes one
+              compact outcome; if the model is unavailable or its output is malformed, a deterministic summary
+              is retained instead. Planning, blocker, synthesis, and task state are all projected into the hive
+              board, inbox, message stream, and structured task ledger — which stays readable independently of
+              the UI. Planner, worker, synthesis, and verification phases each stop after a bounded watchdog.
+            </p>
+
+            <div class="article__source">
+              <p>
+                Sources: <code>README.md</code> (intelligent orchestration lifecycle, control protocol,
+                persistent memory and recovery, safety boundaries) and <code>RELEASE_CHECKLIST.md</code>
+                (runtime checks for allowlisting, receipts, watchdogs, and replay).
+              </p>
+            </div>
+          </div>
+
+          <nav class="article__nav" aria-label="Post navigation">
+            <a class="button button--ghost" href="../blog.html">&larr; All posts</a>
+            <a class="button button--primary" href="worktree-isolation.html">Next: worktree isolation &rarr;</a>
+          </nav>
+        </div>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell site-footer__inner">
+        <span>Relay <code>0.1.0</code> · a desktop multi-agent coding harness orchestrated by Michael.</span>
+        <nav aria-label="Footer">
+          <a href="../index.html">Overview</a>
+          <a href="../features.html">Features</a>
+          <a href="../docs.html">Docs</a>
+          <a href="../blog.html">Blog</a>
+          <a href="../docs.html#release-boundary">Release status</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script src="../assets/relay-site.js"></script>
+  </body>
+</html>

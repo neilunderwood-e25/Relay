@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Relay blog feed. Links are relative and guids are domain-agnostic urn values,
+     so this file works from any path or host without being rewritten. -->
+<rss version="2.0">
+  <channel>
+    <title>Relay blog</title>
+    <link>blog.html</link>
+    <description>Notes on how the Relay harness works: orchestration by Michael, isolated Git worktrees, the Claude Code and Codex CLI provider contract, and the local-first safety boundary.</description>
+    <language>en</language>
+
+    <item>
+      <title>Worktree isolation, and what it refuses to do</title>
+      <link>posts/worktree-isolation.html</link>
+      <guid isPermaLink="false">urn:relay:post:worktree-isolation</guid>
+      <pubDate>Mon, 31 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Every task gets its own relay/orchestrator-* branch and managed worktree, so your checked-out branch stays untouched until you accept a diff yourself.</description>
+    </item>
+
+    <item>
+      <title>Inside the orchestrator: how Michael plans a run</title>
+      <link>posts/inside-the-orchestrator.html</link>
+      <guid isPermaLink="false">urn:relay:post:inside-the-orchestrator</guid>
+      <pubDate>Sun, 30 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Michael plans in a read-only mode, returns a validated one-to-four task plan, and falls back to a deterministic plan rather than stranding the run.</description>
+    </item>
+
+    <item>
+      <title>Introducing Relay: many coding agents, one orchestrator</title>
+      <link>posts/introducing-relay.html</link>
+      <guid isPermaLink="false">urn:relay:post:introducing-relay</guid>
+      <pubDate>Sat, 29 Aug 2026 00:00:00 +0000</pubDate>
+      <description>Relay is a local-first desktop harness that drives the Claude Code and Codex CLI clients you already installed, against a Git project you already have on disk.</description>
+    </item>
+  </channel>
+</rss>

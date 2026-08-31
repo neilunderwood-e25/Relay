@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Worktree isolation, and what it refuses to do — Relay blog</title>
+    <meta
+      name="description"
+      content="Every Relay task gets its own relay/orchestrator-* branch and a project-local managed worktree, and the worktree manager refuses dirty, ahead, escaping, or terminal-owned removals."
+    />
+    <link rel="icon" href="../assets/logo.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/rss+xml" title="Relay blog" href="../feed.xml" />
+    <link rel="stylesheet" href="../assets/relay-site.css" />
+    <link rel="stylesheet" href="../assets/relay-blog.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <a class="brand" href="../index.html">
+          <img src="../assets/logo.svg" alt="" width="30" height="30" />
+          <span>Relay</span>
+          <small>v0.1.0</small>
+        </a>
+
+        <nav class="site-nav" id="site-nav" aria-label="Primary">
+          <a href="../index.html">Overview</a>
+          <a href="../features.html">Features</a>
+          <a href="../docs.html">Docs</a>
+          <a href="../blog.html">Blog</a>
+        </nav>
+
+        <div class="header-tools">
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Switch theme">☀</button>
+          <button
+            class="icon-button nav-toggle"
+            type="button"
+            data-nav-toggle
+            aria-controls="site-nav"
+            aria-label="Toggle navigation"
+          >
+            ☰
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <article class="article">
+        <div class="shell">
+          <a class="back-link" href="../blog.html">&larr; Back to blog</a>
+
+          <header class="article__head">
+            <span class="eyebrow">Isolation</span>
+            <h1>Worktree isolation, and what it refuses to do</h1>
+            <p class="article__meta">
+              <time datetime="2026-08-31">31 August 2026</time>
+              <span>Worktree &amp; integration safety</span>
+            </p>
+            <p class="article__standfirst">
+              Running several coding agents at once is only safe if none of them can surprise you in your own
+              checkout. Relay's answer is one managed Git worktree per task, plus a set of removals the manager
+              deliberately refuses.
+            </p>
+          </header>
+
+          <div class="article__body">
+            <h2>One worktree per task</h2>
+            <p>
+              Every task in a run receives a dedicated <code>relay/orchestrator-*</code> branch and its own
+              managed worktree. Managed worktrees live inside the project under
+              <code>.relay/worktrees/</code>, matching the project-local workflow Claude Code already uses.
+              Claude runs in non-interactive edit-accepting mode and Codex runs in a workspace-write sandbox
+              with approvals disabled — both inside their isolated checkout, never in yours.
+            </p>
+            <p>
+              Relay adds <code>/.relay/worktrees/</code> to the repository's local
+              <code>.git/info/exclude</code> and does not modify your tracked <code>.gitignore</code>. Your
+              committed Git configuration stays yours.
+            </p>
+
+            <h2>Validated before Git sees it</h2>
+            <p>
+              Worktree and branch names are validated before they reach Git, so a name such as
+              <code>../escape</code> is rejected up front rather than being resolved by the filesystem. Relay
+              also refuses managed worktree storage that resolves outside the selected project, and refuses
+              symlinked Hive control directories.
+            </p>
+            <p>
+              Relay's own Git commands run without a shell, using argument arrays rather than interpolated
+              strings. They disable repository hooks, disable terminal prompts, inherit only the environment a
+              local Git operation needs, and have bounded output and execution time.
+            </p>
+
+            <h2>The refusals are the feature</h2>
+            <ul>
+              <li>Removal refuses dirty worktrees and branches with commits ahead of their base.</li>
+              <li>A worktree cannot be removed while a live terminal is using it.</li>
+              <li>Missing worktrees stay visible and can be forgotten without touching repository content.</li>
+              <li>Removing a worktree leaves its Git branch intact for recovery.</li>
+              <li>Legacy worktrees under a previous Harness Home remain discoverable and removable.</li>
+            </ul>
+            <p>
+              Worker terminals may start only in the selected checkout or a live Git-registered worktree, and
+              renderer requests cannot choose an arbitrary terminal directory, assume an internal terminal
+              role, or inject provider CLI arguments. Every denied boundary request is recorded as an
+              <code>app.safety.denied</code> system event, so refusals are auditable rather than invisible.
+            </p>
+
+            <h2>Nothing merges until you say so</h2>
+            <p>
+              Completed worker results expose a bounded per-file diff without changing Git state. Every task
+              must be explicitly accepted or rejected before integration can begin. Accepted tasks are then
+              squashed and applied to the checked-out base branch in task order — and integration refuses a
+              dirty project checkout or the wrong checked-out branch outright. Conflicts are reported by file
+              and aborted without leaving the project in a conflicted state.
+            </p>
+            <p>
+              Final verification runs through an available CLI in read-only mode and its report is retained.
+              Cleanup removes completed managed worktrees only after verification, and task branches remain for
+              recovery. If the app is interrupted, recovery marks the interrupted work as blocked, repairs hive
+              projections, and reports missing worktrees without deleting branches or files.
+            </p>
+
+            <h2>How it is checked</h2>
+            <p>
+              The packaged acceptance pass exercises this end to end: a Split-mode Claude + Codex run, worktrees
+              created under <code>&lt;project&gt;/.relay/worktrees/</code> on <code>relay/*</code> branches, a
+              main checkout that stays unchanged until integration, one Relay commit per accepted task, a
+              required passing verification report before cleanup is enabled, and worktree directories removed
+              while their branches remain available. It also requires rejecting a traversal-style worktree name
+              and refusing cleanup of dirty, ahead, or terminal-owned worktrees.
+            </p>
+
+            <div class="article__source">
+              <p>
+                Sources: <code>README.md</code> (worktree safety, integration lifecycle, safety boundaries) and
+                <code>FULL_E2E_CHECKLIST.md</code> (real multi-agent run, review through cleanup, safety and
+                errors).
+              </p>
+            </div>
+          </div>
+
+          <nav class="article__nav" aria-label="Post navigation">
+            <a class="button button--ghost" href="../blog.html">&larr; All posts</a>
+            <a class="button button--primary" href="../docs.html">Read the docs &rarr;</a>
+          </nav>
+        </div>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell site-footer__inner">
+        <span>Relay <code>0.1.0</code> · a desktop multi-agent coding harness orchestrated by Michael.</span>
+        <nav aria-label="Footer">
+          <a href="../index.html">Overview</a>
+          <a href="../features.html">Features</a>
+          <a href="../docs.html">Docs</a>
+          <a href="../blog.html">Blog</a>
+          <a href="../docs.html#release-boundary">Release status</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script src="../assets/relay-site.js"></script>
+  </body>
+</html>

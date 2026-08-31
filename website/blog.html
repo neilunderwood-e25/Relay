@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blog — Relay</title>
+    <meta
+      name="description"
+      content="Notes on how Relay works: orchestration by Michael, isolated Git worktrees for every worker, the Claude Code and Codex CLI provider contract, and the local-first safety boundary."
+    />
+    <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/rss+xml" title="Relay blog" href="feed.xml" />
+    <link rel="stylesheet" href="assets/relay-site.css" />
+    <link rel="stylesheet" href="assets/relay-blog.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <a class="brand" href="index.html">
+          <img src="assets/logo.svg" alt="" width="30" height="30" />
+          <span>Relay</span>
+          <small>v0.1.0</small>
+        </a>
+
+        <nav class="site-nav" id="site-nav" aria-label="Primary">
+          <a href="index.html">Overview</a>
+          <a href="features.html">Features</a>
+          <a href="docs.html">Docs</a>
+          <a href="blog.html">Blog</a>
+        </nav>
+
+        <div class="header-tools">
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Switch theme">☀</button>
+          <button
+            class="icon-button nav-toggle"
+            type="button"
+            data-nav-toggle
+            aria-controls="site-nav"
+            aria-label="Toggle navigation"
+          >
+            ☰
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="page-head">
+        <div class="shell">
+          <span class="eyebrow">Blog</span>
+          <h1>How the harness actually behaves</h1>
+          <p>
+            Short write-ups on the parts of Relay that are easy to describe and hard to get right:
+            orchestration, isolation, the provider contract, and the boundary around your machine.
+            Everything here describes the implementation in this repository.
+          </p>
+        </div>
+      </section>
+
+      <section class="section section--tight">
+        <div class="shell">
+          <span class="pill"><i class="dot"></i> 3 posts · Milestones 01–17</span>
+
+          <ul class="post-list">
+            <li>
+              <article class="card post-card">
+                <p class="post-card__meta">
+                  <time datetime="2026-08-31">31 August 2026</time>
+                  <span>Isolation</span>
+                </p>
+                <h2 class="post-card__title">
+                  <a href="posts/worktree-isolation.html">Worktree isolation, and what it refuses to do</a>
+                </h2>
+                <p class="post-card__summary">
+                  Every task gets its own <code>relay/orchestrator-*</code> branch and managed worktree, so
+                  your checked-out branch stays untouched until you accept a diff yourself.
+                </p>
+                <a class="post-card__more" href="posts/worktree-isolation.html">Read the post &rarr;</a>
+              </article>
+            </li>
+
+            <li>
+              <article class="card post-card">
+                <p class="post-card__meta">
+                  <time datetime="2026-08-30">30 August 2026</time>
+                  <span>Orchestration</span>
+                </p>
+                <h2 class="post-card__title">
+                  <a href="posts/inside-the-orchestrator.html">Inside the orchestrator: how Michael plans a run</a>
+                </h2>
+                <p class="post-card__summary">
+                  Michael plans in a read-only mode, returns a validated one-to-four task plan, and falls back
+                  to a deterministic plan rather than stranding the run.
+                </p>
+                <a class="post-card__more" href="posts/inside-the-orchestrator.html">Read the post &rarr;</a>
+              </article>
+            </li>
+
+            <li>
+              <article class="card post-card">
+                <p class="post-card__meta">
+                  <time datetime="2026-08-29">29 August 2026</time>
+                  <span>Overview</span>
+                </p>
+                <h2 class="post-card__title">
+                  <a href="posts/introducing-relay.html">Introducing Relay: many coding agents, one orchestrator</a>
+                </h2>
+                <p class="post-card__summary">
+                  Relay is a local-first desktop harness that drives the Claude Code and Codex CLI clients you
+                  already installed, against a Git project you already have on disk.
+                </p>
+                <a class="post-card__more" href="posts/introducing-relay.html">Read the post &rarr;</a>
+              </article>
+            </li>
+          </ul>
+
+          <div class="feed-line">
+            <p>
+              Prefer a reader? The <a href="feed.xml">RSS feed</a> lists the same posts. Relay itself is
+              developed and verified as a local build — macOS signing, notarization, and public distribution
+              are intentionally deferred, so there is no downloadable release yet.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell site-footer__inner">
+        <span>Relay <code>0.1.0</code> · a desktop multi-agent coding harness orchestrated by Michael.</span>
+        <nav aria-label="Footer">
+          <a href="index.html">Overview</a>
+          <a href="features.html">Features</a>
+          <a href="docs.html">Docs</a>
+          <a href="blog.html">Blog</a>
+          <a href="docs.html#release-boundary">Release status</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script src="assets/relay-site.js"></script>
+  </body>
+</html>
