@@ -1,0 +1,206 @@
+/* Relay website — blog-only rules.
+   Loaded after assets/relay-site.css on blog.html and posts/*.html.
+   Everything here reuses that file's custom properties and its .shell, .section,
+   .pill, .card, and .button classes; nothing from it is redefined here. */
+
+/* ---------- listing ---------- */
+
+.post-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 18px;
+}
+
+.post-list > li {
+  margin: 0;
+}
+
+/* Applied together with .card. */
+.post-card {
+  display: grid;
+  gap: 10px;
+  transition: border-color 0.25s ease, transform 0.25s ease;
+}
+
+.post-card:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-2px);
+}
+
+.post-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+}
+
+.post-card__title {
+  margin: 0;
+  font-size: 1.22rem;
+}
+
+.post-card__title a {
+  color: var(--text);
+}
+
+.post-card__title a:hover {
+  color: var(--accent-400);
+}
+
+[data-theme="light"] .post-card__title a:hover {
+  color: var(--brand-500);
+}
+
+.post-card__summary {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.96rem;
+}
+
+.post-card__more {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.feed-line {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-size: 0.88rem;
+  color: var(--text-faint);
+}
+
+.feed-line p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- article ---------- */
+
+.article {
+  padding: 34px 0 72px;
+  position: relative;
+  z-index: 1;
+}
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 22px;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+
+.article__head {
+  max-width: 70ch;
+  padding-bottom: 24px;
+  margin-bottom: 30px;
+  border-bottom: 1px solid var(--line);
+}
+
+.article__head h1 {
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  margin-bottom: 14px;
+}
+
+.article__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+}
+
+.article__standfirst {
+  max-width: 68ch;
+  margin: 16px 0 0;
+  font-size: 1.08rem;
+  color: var(--text-muted);
+}
+
+.article__body {
+  max-width: 70ch;
+}
+
+.article__body h2 {
+  font-size: 1.32rem;
+  margin-top: 38px;
+}
+
+.article__body h3 {
+  font-size: 1.02rem;
+  margin-top: 26px;
+}
+
+.article__body p,
+.article__body li {
+  color: var(--text-muted);
+}
+
+.article__body b,
+.article__body strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.article__source {
+  margin-top: 40px;
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent-500);
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  color: var(--text-faint);
+}
+
+.article__source p:last-child {
+  margin-bottom: 0;
+}
+
+.article__nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  max-width: 70ch;
+  margin-top: 40px;
+  padding-top: 26px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 620px) {
+  .article {
+    padding: 26px 0 52px;
+  }
+
+  .post-card__title {
+    font-size: 1.1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .post-card {
+    transition: none;
+  }
+
+  .post-card:hover {
+    transform: none;
+  }
+}
+
+@media print {
+  .back-link,
+  .article__nav,
+  .feed-line {
+    display: none;
+  }
+}
