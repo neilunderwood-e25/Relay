@@ -12,6 +12,7 @@ export class ProviderEventFormatter {
   private pending = '';
   private readonly tools = new Map<string, string>();
   private readonly emittedText = new Set<string>();
+  private partialText = '';
 
   constructor(private readonly provider: ProviderId) {}
 
@@ -46,6 +47,26 @@ export class ProviderEventFormatter {
       const message = recordValue(event.message);
       const blocks = Array.isArray(message?.content) ? message.content : [];
       return blocks.map((block) => this.formatClaudeBlock(recordValue(block))).join('');
+    }
+    if (event.type === 'stream_event') {
+      const stream = recordValue(event.event);
+      if (stream?.type === 'content_block_start') {
+        const block = recordValue(stream.content_block);
+        return block?.type === 'tool_use' ? this.formatClaudeBlock(block) : '';
+      }
+      if (stream?.type === 'content_block_delta') {
+        const delta = recordValue(stream.delta);
+        if (delta?.type !== 'text_delta') return '';
+        const text = stringValue(delta.text);
+        this.partialText += text;
+        return normalizeNewlines(text);
+      }
+      if (stream?.type === 'content_block_stop' && this.partialText) {
+        this.emittedText.add(this.partialText.trim());
+        this.partialText = '';
+        return '\r\n';
+      }
+      return '';
     }
     if (event.type === 'user') {
       const message = recordValue(event.message);

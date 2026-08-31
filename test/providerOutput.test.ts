@@ -36,6 +36,20 @@ describe('provider event output', () => {
     expect(extractProviderResult('codex', events)).toBe('All tests pass.');
   });
 
+  it('streams Claude text deltas before the final result without duplicating them', () => {
+    const formatter = new ProviderEventFormatter('claude');
+    const delta = (text: string): string => JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text } }
+    });
+    const stop = JSON.stringify({ type: 'stream_event', event: { type: 'content_block_stop' } });
+    const result = JSON.stringify({ type: 'result', result: 'Checking tests now.' });
+
+    expect(formatter.write(`${delta('Checking ')}\n`)).toBe('Checking ');
+    expect(formatter.write(`${delta('tests now.')}\n${stop}\n`)).toBe('tests now.\r\n');
+    expect(formatter.write(`${result}\n`)).not.toContain('Checking tests now.');
+  });
+
   it('leaves ordinary terminal output intact when no event stream was produced', () => {
     expect(extractProviderResult('claude', 'Authentication failed')).toBe('Authentication failed');
   });

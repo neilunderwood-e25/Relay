@@ -172,7 +172,15 @@ describe('WorktreeManager', () => {
     expect(existsSync(join(repo, 'feature.ts'))).toBe(true);
     expect(git(repo, 'log', '-1', '--pretty=%s')).toBe('Relay: integrate task');
     expect(git(repo, 'status', '--porcelain')).toBe('');
+    expect(git(created.path, 'rev-parse', 'HEAD')).toBe(git(repo, 'rev-parse', 'HEAD'));
     expect(existsSync(hookMarker)).toBe(false);
+
+    writeFileSync(join(created.path, 'feature.ts'), 'export const feature = "reconciled";\n');
+    const followup = await manager.integrate(created.id, 'Relay: reconcile task');
+
+    expect(followup.status).toBe('integrated');
+    expect(readFileSync(join(repo, 'feature.ts'), 'utf8')).toContain('reconciled');
+    expect(git(created.path, 'rev-parse', 'HEAD')).toBe(git(repo, 'rev-parse', 'HEAD'));
     database.close();
   });
 

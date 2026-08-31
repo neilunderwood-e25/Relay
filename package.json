@@ -19,7 +19,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest run",
-    "test:cli": "RELAY_REAL_CLI=1 vitest run test/realCli.integration.test.ts --reporter=verbose",
+    "test:cli": "RELAY_REAL_CLI=1 vitest run test/realCli.integration.test.ts test/realInteractiveCli.integration.test.ts --reporter=verbose",
     "test:e2e": "npm run typecheck && npm test && npm run build && npm run test:cli",
     "test:watch": "vitest",
     "postinstall": "electron-builder install-app-deps"

@@ -67,6 +67,7 @@ describe('renderer design-system contract', () => {
     expect(orchestrator).toContain('submissionRef.current');
     expect(orchestrator).toContain("run.integrationStatus === 'conflict'");
     expect(orchestrator).toContain("integrationStatus === 'integrated' && verificationStatus !== 'running'");
+    expect(orchestrator).toContain("'Stop verifier'");
   });
 
   it('projects the shared Michael PTY without mounting a second terminal', () => {
@@ -75,6 +76,20 @@ describe('renderer design-system contract', () => {
     expect(projection).toContain('window.relay.onOrchestratorProjection');
     expect(projection).not.toContain('<TerminalView');
     expect(projection).toContain('aria-live="polite"');
+  });
+
+  it('provides a reusable worker console instead of anonymous terminal tabs', () => {
+    const console = read('src/renderer/src/components/TerminalWorkspace.tsx');
+    expect(console).toContain('window.relay.listAgentSessions');
+    expect(console).toContain('window.relay.submitAgentSessionInput');
+    expect(console).toContain('window.relay.restartAgentSession');
+    expect(console).toContain('window.relay.stopAgentSession');
+    expect(console).toContain('allTerminals.find(({ id }) => id === selectedId)');
+    expect(console).toContain('selectedSession.terminalId');
+    expect(console).toContain('selectedTerminalIsInteractive');
+    expect(console).toContain('aria-label="Agent follow-up"');
+    expect(console).toContain('className="agent-session-rail"');
+    expect(console).not.toContain('<Tabs');
   });
 
   it('ships the operations views on shared UI primitives', () => {

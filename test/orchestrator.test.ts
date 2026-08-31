@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
@@ -28,6 +28,9 @@ class FakeWorktrees {
   created: WorktreeSnapshot[] = [];
   integrated: string[] = [];
   removed: string[] = [];
+  diffPatch = '+feature';
+
+  constructor(private readonly root = '/worktrees') {}
 
   async inspect(): Promise<{
     isRepository: boolean;
@@ -42,7 +45,7 @@ class FakeWorktrees {
     const worktree: WorktreeSnapshot = {
       id: `worktree-${this.created.length + 1}`,
       repoRoot: '/repo',
-      path: `/worktrees/${request.name}`,
+      path: join(this.root, request.name),
       branch: `relay/${request.name}`,
       baseBranch: request.baseBranch ?? 'main',
       createdAt: Date.now(),
@@ -54,6 +57,7 @@ class FakeWorktrees {
       ahead: 0,
       status: 'ready'
     };
+    mkdirSync(worktree.path, { recursive: true });
     this.created.push(worktree);
     return worktree;
   }
@@ -67,8 +71,9 @@ class FakeWorktrees {
       files: [{ path: 'feature.ts', status: 'modified', additions: 2, deletions: 1 }],
       additions: 2,
       deletions: 1,
-      patch: '+feature',
-      truncated: false
+      patch: this.diffPatch,
+      truncated: false,
+      fingerprint: this.diffPatch
     };
   }
 
@@ -86,6 +91,8 @@ class FakeWorktrees {
 class FakeTerminals {
   spawned: Array<{ snapshot: TerminalSnapshot; args?: string[] }> = [];
   stopped: string[] = [];
+  submitted: Array<{ id: string; text: string }> = [];
+  submitError: string | null = null;
   replayData = new Map<string, string>();
 
   async spawn(request: { provider: ProviderId; role?: TerminalRole; name?: string; cwd: string; args?: string[] }): Promise<TerminalSnapshot> {
@@ -114,12 +121,21 @@ class FakeTerminals {
     return { ok: true };
   }
 
+  async submit(id: string, text: string): Promise<{ ok: boolean; error?: string }> {
+    if (this.submitError) return { ok: false, error: this.submitError };
+    this.submitted.push({ id, text });
+    return { ok: true };
+  }
+
   replay(id: string): TerminalReplay {
     return { data: this.replayData.get(id) ?? `summary for ${id}`, lastSequence: 1 };
   }
 }
 
-function fixture(phaseTimeouts?: { planning?: number; worker?: number; synthesis?: number; verification?: number }): {
+function fixture(
+  phaseTimeouts?: { planning?: number; worker?: number; synthesis?: number; verification?: number },
+  resolveWorkerSessionId?: (provider: ProviderId, cwd: string, startedAt: number) => Promise<string | undefined>
+): {
   database: RelayDatabase;
   worktrees: FakeWorktrees;
   terminals: FakeTerminals;
@@ -130,7 +146,7 @@ function fixture(phaseTimeouts?: { planning?: number; worker?: number; synthesis
   temporaryDirectories.push(root);
   const database = new RelayDatabase(join(root, 'relay.db'));
   database.open();
-  const worktrees = new FakeWorktrees();
+  const worktrees = new FakeWorktrees(join(root, 'worktrees'));
   const terminals = new FakeTerminals();
   const messages: HiveCoordinationMessage[] = [];
   const orchestrator = new Orchestrator({
@@ -141,6 +157,7 @@ function fixture(phaseTimeouts?: { planning?: number; worker?: number; synthesis
     detectProviders: async () => capabilities(),
     getOrchestratorConfig: () => ({ provider: 'claude', model: 'claude-opus-4-1' }),
     onCoordinationMessage: (message) => messages.push(message),
+    resolveWorkerSessionId,
     phaseTimeouts
   });
   return { database, worktrees, terminals, orchestrator, messages };
@@ -189,9 +206,17 @@ describe('Orchestrator', () => {
     const workerSessions = workers(terminals);
     expect(worktrees.created).toHaveLength(2);
     expect(new Set(workerSessions.map(({ snapshot }) => snapshot.cwd)).size).toBe(2);
-    expect(workerSessions[0].args?.join(' ')).toContain('Relay worker coordinated by Michael');
-    expect(workerSessions.find(({ snapshot }) => snapshot.provider === 'codex')?.args?.slice(0, 3))
-      .toEqual(['--ask-for-approval', 'never', 'exec']);
+    expect(workerSessions.find(({ snapshot }) => snapshot.provider === 'codex')?.args)
+      .not.toContain('exec');
+    expect(workerSessions.find(({ snapshot }) => snapshot.provider === 'codex')?.args)
+      .toContain('--no-alt-screen');
+    const claudeNativeSessionId = database.getOrchestration(created.run.id)?.sessions
+      ?.find(({ provider }) => provider === 'claude')?.nativeSessionId;
+    expect(claudeNativeSessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(workerSessions.find(({ snapshot }) => snapshot.provider === 'claude')?.args)
+      .toContain(claudeNativeSessionId);
+    expect(terminals.submitted).toHaveLength(2);
+    expect(terminals.submitted[0].text).toContain('Relay worker coordinated by Michael');
     expect(database.getOrchestration(created.run.id)).toMatchObject({
       run: { status: 'running' },
       tasks: [{ status: 'running' }, { status: 'running' }],
@@ -214,6 +239,493 @@ describe('Orchestrator', () => {
     expect(database.getOrchestration(created.run.id)?.tasks.every((task) => task.summary)).toBe(true);
     expect(database.getOrchestration(created.run.id)?.sessions?.every((session) => session.status === 'stopped')).toBe(true);
     expect(database.getOrchestration(created.run.id)?.run.finalSummary).toContain('completed successfully');
+    database.close();
+  });
+
+  it('completes interactive workers from protocol markers while keeping their CLIs alive', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Build; Verify',
+      providers: ['claude', 'codex'],
+      concurrency: 2
+    });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 2 && terminals.submitted.length === 2);
+
+    for (const { snapshot } of workers(terminals)) {
+      const prompt = terminals.submitted.find(({ id }) => id === snapshot.id)?.text ?? '';
+      const token = prompt.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+      expect(token).toBeTruthy();
+      expect(prompt).not.toContain(`RELAY_TASK_COMPLETE:${token}`);
+      const output = `Implemented the assigned work and ran focused checks.\nRELAY_TASK_COMPLETE:${token}`;
+      terminals.replayData.set(snapshot.id, output);
+      orchestrator.handleTerminalData({ id: snapshot.id, data: output, sequence: 1 });
+    }
+
+    await eventually(() => database.getOrchestration(created.run.id)?.tasks.every((task) => task.status === 'completed') === true);
+    expect(database.getOrchestration(created.run.id)?.sessions).toMatchObject([
+      { provider: 'claude', status: 'idle' },
+      { provider: 'codex', status: 'idle' }
+    ]);
+    expect(terminals.stopped).toEqual([]);
+    await finishSynthesis(orchestrator, terminals, 'Both interactive workers completed and remain available.');
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
+    database.close();
+  });
+
+  it('routes an interactive blocker while leaving the worker available for follow-up', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Repair the generated client',
+      providers: ['claude']
+    });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const prompt = terminals.submitted[0].text;
+    const token = prompt.match(/BLOCKED:([a-f0-9]+)/)?.[1];
+    const output = `Unable to continue.\nRELAY_TASK_BLOCKED:${token}: Generated SDK is missing.`;
+    terminals.replayData.set(worker.id, output);
+    orchestrator.handleTerminalData({ id: worker.id, data: output, sequence: 1 });
+
+    await eventually(() => database.getOrchestration(created.run.id)?.tasks[0].status === 'blocked');
+    expect(database.getOrchestration(created.run.id)).toMatchObject({
+      tasks: [{ blocker: 'Generated SDK is missing.' }],
+      sessions: [{ status: 'idle', terminalId: worker.id }]
+    });
+    expect(terminals.stopped).toEqual([]);
+    database.close();
+  });
+
+  it('reuses a completed worker for tracked follow-up prompts', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Build a reusable module',
+      providers: ['claude']
+    });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const taskToken = terminals.submitted[0].text.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({
+      id: worker.id,
+      data: `Module ready.\nRELAY_TASK_COMPLETE:${taskToken}`,
+      sequence: 1
+    });
+    await eventually(() => database.getOrchestration(created.run.id)?.sessions?.[0].status === 'idle');
+    const session = database.getOrchestration(created.run.id)!.sessions![0];
+
+    const active = await orchestrator.submitAgentSessionInput({
+      sessionId: session.id,
+      prompt: 'Add one focused regression test.'
+    });
+    expect(active).toMatchObject({ id: session.id, status: 'working', terminalId: worker.id });
+    const followupPrompt = terminals.submitted[1].text;
+    const followupToken = followupPrompt.match(/READY:([a-f0-9]+)/)?.[1];
+    expect(followupPrompt).toContain('Add one focused regression test.');
+    expect(followupPrompt).not.toContain(`RELAY_AGENT_READY:${followupToken}`);
+
+    orchestrator.handleTerminalData({
+      id: worker.id,
+      data: `Regression test added.\nRELAY_AGENT_READY:${followupToken}`,
+      sequence: 2
+    });
+    await eventually(() => database.getAgentSession(session.id)?.status === 'idle');
+    expect(database.getAgentSession(session.id)).toMatchObject({
+      id: session.id,
+      status: 'idle',
+      terminalId: worker.id,
+      error: undefined
+    });
+    expect(terminals.stopped).toEqual([]);
+    database.close();
+  });
+
+  it('reopens stale review, integration, verification, and synthesis after a follow-up changes files', async () => {
+    const { database, worktrees, terminals, orchestrator, messages } = fixture();
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Build a reusable module',
+      providers: ['claude']
+    });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const taskToken = terminals.submitted[0].text.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({
+      id: worker.id,
+      data: `Module ready.\nRELAY_TASK_COMPLETE:${taskToken}`,
+      sequence: 1
+    });
+    await finishSynthesis(orchestrator, terminals, 'The original module is complete.');
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
+    const task = database.getOrchestration(created.run.id)!.tasks[0];
+    await orchestrator.review({ taskId: task.id, decision: 'accepted' });
+    await orchestrator.integrate({ runId: created.run.id });
+    const verifying = await orchestrator.verify({ runId: created.run.id, provider: 'codex' });
+    terminals.replayData.set(verifying.run.verificationTerminalId!, 'Checks passed.\nRELAY_VERDICT: PASS');
+    orchestrator.handleTerminalExit({
+      id: verifying.run.verificationTerminalId!,
+      exitCode: 0,
+      exitedAt: Date.now()
+    });
+    await eventually(() => database.getOrchestration(created.run.id)?.run.verificationStatus === 'passed');
+
+    const session = database.getOrchestration(created.run.id)!.sessions![0];
+    await orchestrator.submitAgentSessionInput({
+      sessionId: session.id,
+      prompt: 'Add a regression test and update the implementation.'
+    });
+    await expect(orchestrator.review({ taskId: task.id, decision: 'accepted' }))
+      .rejects.toThrow('follow-up to finish');
+    await expect(orchestrator.integrate({ runId: created.run.id }))
+      .rejects.toThrow('follow-ups to finish');
+    await expect(orchestrator.verify({ runId: created.run.id, provider: 'codex' }))
+      .rejects.toThrow('follow-ups to finish');
+    await expect(orchestrator.cleanup({ runId: created.run.id }))
+      .rejects.toThrow('follow-ups to finish');
+    worktrees.diffPatch = '+reconciled feature';
+    const followupToken = terminals.submitted.at(-1)!.text.match(/READY:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({
+      id: worker.id,
+      data: `Regression coverage added.\nRELAY_AGENT_READY:${followupToken}`,
+      sequence: 2
+    });
+
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'summarizing');
+    const reconciled = database.getOrchestration(created.run.id)!;
+    expect(reconciled.tasks[0]).toMatchObject({
+      status: 'completed',
+      summary: 'Regression coverage added.',
+      reviewStatus: 'pending',
+      integrationStatus: 'pending',
+      integrationCommit: undefined,
+      reviewedAt: undefined,
+      integratedAt: undefined
+    });
+    expect(reconciled.run).toMatchObject({
+      integrationStatus: 'pending',
+      verificationStatus: 'idle',
+      verificationSummary: undefined,
+      synthesisStatus: 'running',
+      finalSummary: undefined
+    });
+    expect(messages.at(-1)).toMatchObject({ kind: 'result', taskId: task.id });
+    expect(messages.at(-1)?.body).toContain('Review and integration are required again');
+
+    await eventually(() => terminals.spawned.filter(({ snapshot }) => snapshot.role === 'synthesizer').length === 2);
+    const revisedSynthesis = terminals.spawned.filter(({ snapshot }) => snapshot.role === 'synthesizer').at(-1)!.snapshot;
+    terminals.replayData.set(revisedSynthesis.id, 'The revised module and regression test are ready.');
+    orchestrator.handleTerminalExit({ id: revisedSynthesis.id, exitCode: 0, exitedAt: Date.now() });
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
+    expect(database.getOrchestration(created.run.id)?.run.finalSummary).toContain('revised module');
+    database.close();
+  });
+
+  it('reconciles partial work when a follow-up CLI exits before its ready marker', async () => {
+    const { database, worktrees, terminals, orchestrator, messages } = fixture();
+    const created = await orchestrator.create({ repoPath: '/repo', objective: 'Build', providers: ['claude'] });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const taskToken = terminals.submitted[0].text.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({ id: worker.id, data: `Done\nRELAY_TASK_COMPLETE:${taskToken}`, sequence: 1 });
+    await finishSynthesis(orchestrator, terminals, 'Initial build complete.');
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
+    const session = database.getOrchestration(created.run.id)!.sessions![0];
+
+    await orchestrator.submitAgentSessionInput({ sessionId: session.id, prompt: 'Revise the module.' });
+    worktrees.diffPatch = '+partial revision';
+    terminals.replayData.set(worker.id, 'Updated the module before the provider exited.');
+    orchestrator.handleTerminalExit({ id: worker.id, exitCode: 1, exitedAt: Date.now() });
+
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'summarizing');
+    expect(database.getAgentSession(session.id)).toMatchObject({ status: 'failed' });
+    expect(database.getOrchestration(created.run.id)?.tasks[0]).toMatchObject({
+      status: 'failed',
+      reviewStatus: 'pending',
+      integrationStatus: 'pending'
+    });
+    expect(messages.at(-1)).toMatchObject({ kind: 'blocker' });
+    database.close();
+  });
+
+  it('preserves accepted and verified results when a follow-up is informational only', async () => {
+    const { database, terminals, orchestrator, messages } = fixture();
+    const created = await orchestrator.create({ repoPath: '/repo', objective: 'Inspect', providers: ['claude'] });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const taskToken = terminals.submitted[0].text.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({ id: worker.id, data: `Done\nRELAY_TASK_COMPLETE:${taskToken}`, sequence: 1 });
+    await finishSynthesis(orchestrator, terminals, 'Inspection complete.');
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
+    const task = database.getOrchestration(created.run.id)!.tasks[0];
+    await orchestrator.review({ taskId: task.id, decision: 'accepted' });
+    await orchestrator.integrate({ runId: created.run.id });
+    const before = database.getOrchestration(created.run.id)!;
+    const session = before.sessions![0];
+
+    await orchestrator.submitAgentSessionInput({ sessionId: session.id, prompt: 'Explain the design.' });
+    const token = terminals.submitted.at(-1)!.text.match(/READY:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({
+      id: worker.id,
+      data: `The module has one public boundary.\nRELAY_AGENT_READY:${token}`,
+      sequence: 2
+    });
+    await eventually(() => database.getAgentSession(session.id)?.status === 'idle');
+
+    const after = database.getOrchestration(created.run.id)!;
+    expect(after.run).toMatchObject({
+      status: 'completed',
+      integrationStatus: 'integrated',
+      finalSummary: before.run.finalSummary
+    });
+    expect(after.tasks[0]).toMatchObject({
+      reviewStatus: 'accepted',
+      integrationStatus: 'integrated',
+      integrationCommit: before.tasks[0].integrationCommit
+    });
+    expect(messages.at(-1)).toMatchObject({ kind: 'status' });
+    expect(messages.at(-1)?.body).toContain('without changing the worktree');
+    expect(terminals.spawned.filter(({ snapshot }) => snapshot.role === 'synthesizer')).toHaveLength(1);
+    database.close();
+  });
+
+  it('resolves a blocked task through its live session even when no files change', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({ repoPath: '/repo', objective: 'Inspect', providers: ['claude'] });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const taskToken = terminals.submitted[0].text.match(/BLOCKED:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({
+      id: worker.id,
+      data: `Need a decision.\nRELAY_TASK_BLOCKED:${taskToken}: Choose a format.`,
+      sequence: 1
+    });
+    await finishSynthesis(orchestrator, terminals, 'The task needs a format decision.');
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'blocked');
+    const session = database.getOrchestration(created.run.id)!.sessions![0];
+
+    await orchestrator.submitAgentSessionInput({ sessionId: session.id, prompt: 'Use JSON.' });
+    const token = terminals.submitted.at(-1)!.text.match(/READY:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({
+      id: worker.id,
+      data: `JSON selected.\nRELAY_AGENT_READY:${token}`,
+      sequence: 2
+    });
+
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'summarizing');
+    expect(database.getOrchestration(created.run.id)?.tasks[0]).toMatchObject({
+      status: 'completed',
+      blocker: undefined,
+      summary: 'JSON selected.',
+      reviewStatus: 'pending'
+    });
+    database.close();
+  });
+
+  it('stops and resumes a durable worker without changing its Relay identity', async () => {
+    const nativeSessionId = '01a057e7-ce82-7031-9fc4-cf3ec5800004';
+    const { database, terminals, orchestrator } = fixture(undefined, async () => nativeSessionId);
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Inspect the project',
+      providers: ['codex']
+    });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const original = workers(terminals)[0].snapshot;
+    const token = terminals.submitted[0].text.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({
+      id: original.id,
+      data: `Inspection complete.\nRELAY_TASK_COMPLETE:${token}`,
+      sequence: 1
+    });
+    await eventually(() => database.getOrchestration(created.run.id)?.sessions?.[0].status === 'idle');
+    await eventually(() => database.getOrchestration(created.run.id)?.sessions?.[0].nativeSessionId === nativeSessionId);
+    const session = database.getOrchestration(created.run.id)!.sessions![0];
+
+    await expect(orchestrator.stopAgentSession({ sessionId: session.id })).resolves.toEqual({ ok: true });
+    expect(database.getAgentSession(session.id)?.status).toBe('stopping');
+    expect(terminals.stopped).toContain(original.id);
+    await expect(orchestrator.restartAgentSession({ sessionId: session.id }))
+      .rejects.toThrow('live session');
+    orchestrator.handleTerminalExit({ id: original.id, exitCode: 143, exitedAt: Date.now() });
+    await eventually(() => database.getAgentSession(session.id)?.status === 'stopped');
+    expect(database.getAgentSession(session.id)?.error).toBeUndefined();
+
+    const restarted = await orchestrator.restartAgentSession({ sessionId: session.id });
+    expect(restarted).toMatchObject({ id: session.id, status: 'idle', worktreePath: session.worktreePath });
+    expect(restarted.terminalId).not.toBe(original.id);
+    const resumedTerminal = terminals.spawned.find(({ snapshot }) => snapshot.id === restarted.terminalId);
+    expect(resumedTerminal?.args?.slice(-2)).toEqual(['resume', nativeSessionId]);
+    expect(database.getOrchestrationTask(session.initialTaskId)?.terminalId).toBe(restarted.terminalId);
+    database.close();
+  });
+
+  it('reconciles changed follow-up work as stopped when the user stops its live session', async () => {
+    const { database, worktrees, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({ repoPath: '/repo', objective: 'Build', providers: ['claude'] });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const taskToken = terminals.submitted[0].text.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({ id: worker.id, data: `Done\nRELAY_TASK_COMPLETE:${taskToken}`, sequence: 1 });
+    await finishSynthesis(orchestrator, terminals, 'Initial build complete.');
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
+    const session = database.getOrchestration(created.run.id)!.sessions![0];
+
+    await orchestrator.submitAgentSessionInput({ sessionId: session.id, prompt: 'Change the implementation.' });
+    worktrees.diffPatch = '+partial user-stopped change';
+    await expect(orchestrator.stopAgentSession({ sessionId: session.id })).resolves.toEqual({ ok: true });
+    expect(database.getAgentSession(session.id)?.status).toBe('stopping');
+    orchestrator.handleTerminalExit({ id: worker.id, exitCode: 1, exitedAt: Date.now() });
+
+    await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'summarizing');
+    expect(database.getAgentSession(session.id)).toMatchObject({ status: 'stopped', error: undefined });
+    expect(database.getOrchestration(created.run.id)?.tasks[0]).toMatchObject({
+      status: 'stopped',
+      reviewStatus: 'pending',
+      integrationStatus: 'pending'
+    });
+    database.close();
+  });
+
+  it('closes durable sessions when their stopped worktree is removed', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({ repoPath: '/repo', objective: 'Build', providers: ['claude'] });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const taskToken = terminals.submitted[0].text.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({ id: worker.id, data: `Done\nRELAY_TASK_COMPLETE:${taskToken}`, sequence: 1 });
+    await eventually(() => database.getOrchestration(created.run.id)?.sessions?.[0].status === 'idle');
+    const snapshot = database.getOrchestration(created.run.id)!;
+    const session = snapshot.sessions![0];
+    const worktreeId = session.worktreeId!;
+    expect(orchestrator.canRemoveWorktree(worktreeId)).toMatchObject({ ok: false });
+
+    await orchestrator.stopAgentSession({ sessionId: session.id });
+    expect(orchestrator.canRemoveWorktree(worktreeId)).toMatchObject({ ok: false });
+    orchestrator.handleTerminalExit({ id: worker.id, exitCode: 0, exitedAt: Date.now() });
+    await eventually(() => database.getAgentSession(session.id)?.status === 'stopped');
+    expect(orchestrator.canRemoveWorktree(worktreeId)).toEqual({ ok: true });
+    await orchestrator.finalizeWorktreeRemoval(worktreeId);
+
+    expect(database.getAgentSession(session.id)).toMatchObject({
+      status: 'closed',
+      worktreeId: undefined,
+      worktreePath: undefined,
+      terminalId: undefined
+    });
+    expect(database.getOrchestrationTask(session.initialTaskId)).toMatchObject({
+      worktreeId: undefined,
+      worktreePath: undefined,
+      terminalId: undefined
+    });
+    await expect(orchestrator.restartAgentSession({ sessionId: session.id }))
+      .rejects.toThrow('cannot be restarted');
+    database.close();
+  });
+
+  it('restores an idle session when a follow-up cannot be submitted', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({ repoPath: '/repo', objective: 'Build', providers: ['claude'] });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const token = terminals.submitted[0].text.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({ id: worker.id, data: `Done\nRELAY_TASK_COMPLETE:${token}`, sequence: 1 });
+    await eventually(() => database.getOrchestration(created.run.id)?.sessions?.[0].status === 'idle');
+    const session = database.getOrchestration(created.run.id)!.sessions![0];
+    terminals.submitError = 'PTY input failed.';
+
+    await expect(orchestrator.submitAgentSessionInput({ sessionId: session.id, prompt: 'Change it.' }))
+      .rejects.toThrow('PTY input failed.');
+    expect(database.getAgentSession(session.id)).toMatchObject({ status: 'idle', error: 'PTY input failed.' });
+    database.close();
+  });
+
+  it('quarantines a recovered session when its managed worktree is missing', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({ repoPath: '/repo', objective: 'Inspect', providers: ['claude'] });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const session = database.getOrchestration(created.run.id)!.sessions![0];
+    session.status = 'resumable';
+    session.terminalId = undefined;
+    database.upsertAgentSession(session);
+    rmSync(session.worktreePath!, { recursive: true, force: true });
+
+    expect(orchestrator.reconcileRecoveredSessions()).toBe(1);
+    expect(database.getAgentSession(session.id)).toMatchObject({
+      status: 'failed',
+      terminalId: undefined,
+      error: 'The agent worktree is missing. Restore it before resuming this session.'
+    });
+    await expect(orchestrator.restartAgentSession({ sessionId: session.id }))
+      .rejects.toThrow('worktree is missing');
+    database.close();
+  });
+
+  it('recovers a persisted session after Relay restarts and resumes its exact conversation', async () => {
+    const { database, worktrees, terminals, orchestrator } = fixture();
+    const created = await orchestrator.create({ repoPath: '/repo', objective: 'Build', providers: ['claude'] });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => workers(terminals).length === 1 && terminals.submitted.length === 1);
+    const worker = workers(terminals)[0].snapshot;
+    const token = terminals.submitted[0].text.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    orchestrator.handleTerminalData({ id: worker.id, data: `Done\nRELAY_TASK_COMPLETE:${token}`, sequence: 1 });
+    await eventually(() => database.getOrchestration(created.run.id)?.sessions?.[0].status === 'idle');
+    const beforeRestart = database.getOrchestration(created.run.id)!.sessions![0];
+    expect(beforeRestart.nativeSessionId).toBeTruthy();
+    orchestrator.shutdown();
+
+    database.close();
+    database.open();
+    const resumedTerminals = new FakeTerminals();
+    const restarted = new Orchestrator({
+      database,
+      logger: pino({ enabled: false }),
+      worktrees,
+      terminals: resumedTerminals,
+      detectProviders: async () => capabilities()
+    });
+    expect(restarted.recover()).toBeGreaterThan(0);
+    expect(database.getAgentSession(beforeRestart.id)).toMatchObject({
+      status: 'resumable',
+      terminalId: undefined,
+      nativeSessionId: beforeRestart.nativeSessionId
+    });
+
+    const resumed = await restarted.restartAgentSession({ sessionId: beforeRestart.id });
+    expect(resumed).toMatchObject({ id: beforeRestart.id, status: 'idle', error: undefined });
+    expect(resumedTerminals.spawned[0].args).toContain('--resume');
+    expect(resumedTerminals.spawned[0].args).toContain(beforeRestart.nativeSessionId);
+    database.close();
+  });
+
+  it('fails safely when the initial interactive prompt cannot be submitted', async () => {
+    const { database, terminals, orchestrator } = fixture();
+    terminals.submitError = 'PTY input failed.';
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Build one thing',
+      providers: ['codex']
+    });
+    await finishPlanningWithFallback(orchestrator, terminals);
+    await eventually(() => database.getOrchestration(created.run.id)?.tasks[0].status === 'failed');
+
+    expect(database.getOrchestration(created.run.id)).toMatchObject({
+      tasks: [{ status: 'failed', error: 'PTY input failed.' }],
+      sessions: [{ status: 'failed', error: 'PTY input failed.' }]
+    });
+    expect(terminals.stopped).toEqual([workers(terminals)[0].snapshot.id]);
     database.close();
   });
 
@@ -334,7 +846,8 @@ describe('Orchestrator', () => {
     ]);
     expect(workers(terminals).map(({ snapshot }) => snapshot.name)).toEqual(['Avery', 'Morgan']);
     expect(workers(terminals)[0].args).toContain('claude-sonnet-4-5');
-    expect(workers(terminals)[0].args?.at(-1)).toContain('Own the frontend and accessibility.');
+    expect(terminals.submitted.find(({ id }) => id === workers(terminals)[0].snapshot.id)?.text)
+      .toContain('Own the frontend and accessibility.');
     database.close();
   });
 
@@ -416,6 +929,7 @@ describe('Orchestrator', () => {
 
     const verifying = await orchestrator.verify({ runId: created.run.id, provider: 'codex' });
     expect(verifying.run).toMatchObject({ verificationStatus: 'running', verificationProvider: 'codex' });
+    expect(terminals.spawned.at(-1)?.snapshot.role).toBe('verifier');
     expect(terminals.spawned.at(-1)?.args).toContain('read-only');
     terminals.replayData.set(
       verifying.run.verificationTerminalId!,
@@ -428,9 +942,19 @@ describe('Orchestrator', () => {
     });
     await eventually(() => database.getOrchestration(created.run.id)?.run.verificationStatus === 'passed');
 
+    const restartedVerification = await orchestrator.verify({ runId: created.run.id, provider: 'claude' });
+    const restartedTerminalId = restartedVerification.run.verificationTerminalId!;
+    await expect(orchestrator.stop(created.run.id)).resolves.toEqual({ ok: true });
+    expect(terminals.stopped).toContain(restartedTerminalId);
+    expect(database.getOrchestration(created.run.id)?.run).toMatchObject({
+      verificationStatus: 'failed',
+      verificationError: 'Verification stopped by user.'
+    });
+
     const cleaned = await orchestrator.cleanup({ runId: created.run.id });
     expect(worktrees.removed).toEqual(worktrees.created.map((worktree) => worktree.id));
     expect(cleaned.tasks.every((task) => !task.worktreeId)).toBe(true);
+    expect(cleaned.sessions?.every((session) => session.status === 'closed')).toBe(true);
     database.close();
   });
 

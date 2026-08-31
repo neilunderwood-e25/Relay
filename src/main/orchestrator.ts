@@ -1,7 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import type { Logger } from 'pino';
 import type {
   AgentSession,
+  AgentSessionInputRequest,
+  AgentSessionRequest,
   AgentProfile,
   HiveCoordinationMessage,
   OperationResult,
@@ -49,6 +52,23 @@ const PLANNING_TIMEOUT_MS = 5 * 60_000;
 const SYNTHESIS_TIMEOUT_MS = 5 * 60_000;
 const VERIFICATION_TIMEOUT_MS = 15 * 60_000;
 const WORKER_TIMEOUT_MS = 45 * 60_000;
+const MAX_WORKER_SIGNAL_BUFFER = 512 * 1024;
+const MAX_AGENT_FOLLOWUP_LENGTH = 16_000;
+
+interface InteractiveWorkerSignal {
+  kind: 'task' | 'followup';
+  taskId: string;
+  sessionId?: string;
+  completionMarker: string;
+  blockedMarker: string;
+  transcript: string;
+  settling: boolean;
+  baselineDiff?: string;
+  baselineDiffError?: string;
+  baselineTaskStatus?: OrchestrationTask['status'];
+  exit?: { exitCode: number; exitedAt: number; timeoutReason?: string };
+  stopRequested?: boolean;
+}
 
 interface WorktreeService {
   inspect(directory: string): Promise<{
@@ -81,6 +101,7 @@ interface TerminalService {
     role?: TerminalRole;
     outputMode?: TerminalOutputMode;
   }): Promise<TerminalSnapshot>;
+  submit(id: string, text: string): Promise<OperationResult>;
   stop(id: string, force?: boolean): OperationResult;
   replay(id: string): TerminalReplay;
 }
@@ -95,6 +116,12 @@ export interface OrchestratorOptions {
   getOrchestratorConfig?: () => { provider: ProviderId; model: string | null };
   onCoordinationMessage?: (message: HiveCoordinationMessage) => void;
   phaseTimeouts?: Partial<Record<'planning' | 'worker' | 'synthesis' | 'verification', number>>;
+  prepareWorkerTerminal?: (terminal: TerminalSnapshot, worktreePath: string) => Promise<TerminalSnapshot>;
+  resolveWorkerSessionId?: (
+    provider: ProviderId,
+    cwd: string,
+    startedAt: number
+  ) => Promise<string | undefined>;
   onUpdate?: (snapshot: OrchestrationSnapshot) => void;
 }
 
@@ -102,6 +129,8 @@ export class Orchestrator {
   private readonly runTails = new Map<string, Promise<void>>();
   private readonly terminalTimeouts = new Map<string, NodeJS.Timeout>();
   private readonly timeoutReasons = new Map<string, string>();
+  private readonly workerSignals = new Map<string, InteractiveWorkerSignal>();
+  private readonly nativeSessionLookups = new Set<string>();
 
   constructor(private readonly options: OrchestratorOptions) {}
 
@@ -117,10 +146,265 @@ export class Orchestrator {
     for (const timer of this.terminalTimeouts.values()) clearTimeout(timer);
     this.terminalTimeouts.clear();
     this.timeoutReasons.clear();
+    this.workerSignals.clear();
+    this.nativeSessionLookups.clear();
   }
 
   list(repoRoot?: string): OrchestrationSnapshot[] {
     return this.options.database.listOrchestrations(repoRoot);
+  }
+
+  listAgentSessions(repoRoot?: string): AgentSession[] {
+    const runIds = new Set(this.options.database.listOrchestrations(repoRoot).map(({ run }) => run.id));
+    return this.options.database.listAgentSessions()
+      .filter((session) => runIds.has(session.runId))
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  canRemoveWorktree(worktreeId: string): OperationResult {
+    const active = this.options.database.listAgentSessions()
+      .find((session) => session.worktreeId === worktreeId
+        && ['starting', 'working', 'idle', 'stopping'].includes(session.status));
+    return active
+      ? { ok: false, error: `Stop ${active.agentName} before deleting this worktree.` }
+      : { ok: true };
+  }
+
+  async finalizeWorktreeRemoval(worktreeId: string): Promise<void> {
+    const sessions = this.options.database.listAgentSessions()
+      .filter((session) => session.worktreeId === worktreeId && session.status !== 'closed');
+    const runIds = [...new Set(sessions.map((session) => session.runId))];
+    for (const runId of runIds) {
+      await this.enqueue(runId, async () => {
+        for (const candidate of sessions.filter((session) => session.runId === runId)) {
+          const session = this.options.database.getAgentSession(candidate.id);
+          if (!session || session.worktreeId !== worktreeId) continue;
+          const task = this.options.database.getOrchestrationTask(session.initialTaskId);
+          if (task) {
+            task.worktreeId = undefined;
+            task.worktreePath = undefined;
+            task.terminalId = undefined;
+            task.updatedAt = Date.now();
+            this.options.database.updateOrchestrationTask(task);
+          }
+          this.closeAgentSession(session, 'This agent worktree was removed.');
+        }
+        this.emit(runId);
+      });
+    }
+  }
+
+  reconcileRecoveredSessions(): number {
+    let changed = 0;
+    for (const session of this.options.database.listAgentSessions()) {
+      if (!['resumable', 'stopped'].includes(session.status) || !session.worktreePath) continue;
+      if (existsSync(session.worktreePath)) continue;
+      session.status = 'failed';
+      session.terminalId = undefined;
+      session.updatedAt = Date.now();
+      session.stoppedAt = session.updatedAt;
+      session.error = 'The agent worktree is missing. Restore it before resuming this session.';
+      this.options.database.upsertAgentSession(session);
+      this.options.database.appendEvent('orchestration.agent_session.recovery_failed', {
+        sessionId: session.id,
+        runId: session.runId,
+        reason: 'missing_worktree'
+      });
+      this.emit(session.runId);
+      changed += 1;
+    }
+    return changed;
+  }
+
+  async submitAgentSessionInput(request: AgentSessionInputRequest): Promise<AgentSession> {
+    const prompt = request?.prompt?.trim();
+    if (!prompt) throw new Error('Enter a follow-up first.');
+    if (prompt.length > MAX_AGENT_FOLLOWUP_LENGTH) {
+      throw new Error(`Keep follow-ups under ${MAX_AGENT_FOLLOWUP_LENGTH.toLocaleString()} characters.`);
+    }
+    const existing = request?.sessionId
+      ? this.options.database.getAgentSession(request.sessionId)
+      : undefined;
+    if (!existing) throw new Error('The agent session was not found.');
+
+    await this.enqueue(existing.runId, async () => {
+      const session = this.options.database.getAgentSession(existing.id);
+      if (!session) throw new Error('The agent session was not found.');
+      if (session.status !== 'idle' || !session.terminalId) {
+        throw new Error(session.status === 'working'
+          ? `${session.agentName} is still working.`
+          : `Restart ${session.agentName} before sending a follow-up.`);
+      }
+      if (this.workerSignals.has(session.terminalId)) {
+        throw new Error(`${session.agentName} is still working.`);
+      }
+
+      const checkpoint = await this.captureTaskDiff(session.initialTaskId);
+      const task = this.options.database.getOrchestrationTask(session.initialTaskId);
+      const completionToken = randomUUID().replace(/-/g, '').slice(0, 20);
+      const terminalId = session.terminalId;
+      this.workerSignals.set(terminalId, {
+        kind: 'followup',
+        taskId: session.initialTaskId,
+        sessionId: session.id,
+        completionMarker: `RELAY_AGENT_READY:${completionToken}`,
+        blockedMarker: `RELAY_AGENT_BLOCKED:${completionToken}:`,
+        transcript: '',
+        settling: false,
+        baselineDiff: checkpoint.fingerprint,
+        baselineDiffError: checkpoint.error,
+        baselineTaskStatus: task?.status
+      });
+      session.status = 'working';
+      session.updatedAt = Date.now();
+      session.lastActiveAt = session.updatedAt;
+      session.error = undefined;
+      this.options.database.upsertAgentSession(session);
+      this.emit(session.runId);
+
+      const result = await this.options.terminals.submit(
+        terminalId,
+        agentFollowupPrompt(prompt, completionToken)
+      );
+      if (!result.ok) {
+        this.workerSignals.delete(terminalId);
+        session.status = 'idle';
+        session.updatedAt = Date.now();
+        session.error = result.error ?? 'Could not submit the follow-up.';
+        this.options.database.upsertAgentSession(session);
+        this.emit(session.runId);
+        throw new Error(session.error);
+      }
+      this.armTerminalTimeout(
+        terminalId,
+        this.phaseTimeout('worker', WORKER_TIMEOUT_MS),
+        'Agent follow-up timed out after 45 minutes.'
+      );
+      this.options.database.appendEvent('orchestration.agent_session.prompted', {
+        sessionId: session.id,
+        runId: session.runId,
+        terminalId,
+        promptLength: prompt.length,
+        worktreeCheckpoint: checkpoint.fingerprint ? 'captured' : 'unavailable',
+        worktreeCheckpointError: checkpoint.error
+      });
+    });
+    return this.options.database.getAgentSession(existing.id)!;
+  }
+
+  async restartAgentSession(request: AgentSessionRequest): Promise<AgentSession> {
+    const existing = request?.sessionId
+      ? this.options.database.getAgentSession(request.sessionId)
+      : undefined;
+    if (!existing) throw new Error('The agent session was not found.');
+
+    await this.enqueue(existing.runId, async () => {
+      const session = this.options.database.getAgentSession(existing.id);
+      if (!session) throw new Error('The agent session was not found.');
+      if (['starting', 'working', 'idle', 'stopping'].includes(session.status)) {
+        throw new Error(`${session.agentName} already has a live session.`);
+      }
+      if (session.status === 'closed') {
+        throw new Error(`${session.agentName}'s worktree was removed. This session cannot be restarted.`);
+      }
+      if (!session.worktreePath || !existsSync(session.worktreePath)) {
+        session.status = 'failed';
+        session.updatedAt = Date.now();
+        session.stoppedAt = session.updatedAt;
+        session.error = 'The agent worktree is missing. Restore it before resuming this session.';
+        this.options.database.upsertAgentSession(session);
+        this.emit(session.runId);
+        throw new Error(session.error);
+      }
+      session.status = 'starting';
+      session.updatedAt = Date.now();
+      session.error = undefined;
+      this.options.database.upsertAgentSession(session);
+      this.emit(session.runId);
+
+      try {
+        const spawned = await this.options.terminals.spawn({
+          provider: session.provider,
+          outputMode: 'terminal',
+          avatarSeed: session.avatarSeed,
+          cwd: session.worktreePath,
+          name: session.agentName,
+          cols: 120,
+          rows: 32,
+          args: providerAdapter(session.provider).resumeWorkerArgs(session.model, session.nativeSessionId)
+        });
+        const terminal = this.options.prepareWorkerTerminal
+          ? await this.options.prepareWorkerTerminal(spawned, session.worktreePath)
+          : spawned;
+        const task = this.options.database.getOrchestrationTask(session.initialTaskId);
+        if (task) {
+          task.terminalId = terminal.id;
+          task.updatedAt = Date.now();
+          this.options.database.updateOrchestrationTask(task);
+        }
+        session.terminalId = terminal.id;
+        session.status = 'idle';
+        session.updatedAt = Date.now();
+        session.lastActiveAt = session.updatedAt;
+        session.stoppedAt = undefined;
+        this.options.database.upsertAgentSession(session);
+        this.options.database.appendEvent('orchestration.agent_session.restarted', {
+          sessionId: session.id,
+          runId: session.runId,
+          terminalId: terminal.id,
+          provider: session.provider,
+          nativeSessionId: session.nativeSessionId ?? null
+        });
+        this.emit(session.runId);
+      } catch (error) {
+        session.status = 'failed';
+        session.updatedAt = Date.now();
+        session.stoppedAt = session.updatedAt;
+        session.error = messageOf(error);
+        this.options.database.upsertAgentSession(session);
+        this.emit(session.runId);
+        throw error;
+      }
+    });
+    return this.options.database.getAgentSession(existing.id)!;
+  }
+
+  async stopAgentSession(request: AgentSessionRequest): Promise<OperationResult> {
+    const existing = request?.sessionId
+      ? this.options.database.getAgentSession(request.sessionId)
+      : undefined;
+    if (!existing) return { ok: false, error: 'The agent session was not found.' };
+    let result: OperationResult = { ok: true };
+    await this.enqueue(existing.runId, async () => {
+      const session = this.options.database.getAgentSession(existing.id);
+      if (!session || !session.terminalId || ['stopped', 'resumable', 'failed', 'closed'].includes(session.status)) return;
+      const signal = this.workerSignals.get(session.terminalId);
+      if (signal?.kind === 'followup') signal.stopRequested = true;
+      result = this.options.terminals.stop(session.terminalId);
+      if (!result.ok) {
+        if (signal?.kind === 'followup') signal.stopRequested = false;
+        return;
+      }
+      this.clearTerminalTimeout(session.terminalId);
+      if (signal?.kind !== 'followup') this.workerSignals.delete(session.terminalId);
+      const task = this.options.database.getOrchestrationTask(session.initialTaskId);
+      if (task && ['starting', 'running'].includes(task.status)) {
+        task.status = 'stopping';
+        task.updatedAt = Date.now();
+        this.options.database.updateOrchestrationTask(task);
+      }
+      session.status = 'stopping';
+      session.updatedAt = Date.now();
+      session.stoppedAt = undefined;
+      this.options.database.upsertAgentSession(session);
+      this.options.database.appendEvent('orchestration.agent_session.stop_requested', {
+        sessionId: session.id,
+        runId: session.runId,
+        terminalId: session.terminalId
+      });
+      this.emit(session.runId);
+    });
+    return result;
   }
 
   async create(
@@ -242,7 +526,27 @@ export class Orchestrator {
   async stop(runId: string): Promise<OperationResult> {
     const snapshot = this.options.database.getOrchestration(runId);
     if (!snapshot) return { ok: false, error: 'Orchestrator run was not found.' };
-    if (isFinalRun(snapshot.run.status)) return { ok: true };
+    if (isFinalRun(snapshot.run.status)) {
+      if (snapshot.run.verificationStatus !== 'running' || !snapshot.run.verificationTerminalId) return { ok: true };
+      await this.enqueue(runId, async () => {
+        const current = this.options.database.getOrchestration(runId);
+        if (!current || current.run.verificationStatus !== 'running' || !current.run.verificationTerminalId) return;
+        const terminalId = current.run.verificationTerminalId;
+        this.clearTerminalTimeout(terminalId);
+        this.options.terminals.stop(terminalId);
+        current.run.verificationStatus = 'failed';
+        current.run.verificationError = 'Verification stopped by user.';
+        current.run.updatedAt = Date.now();
+        this.options.database.updateOrchestrationRun(current.run);
+        this.options.database.appendEvent('orchestration.verification.finished', {
+          runId,
+          status: 'failed',
+          stopped: true
+        });
+        this.emit(runId);
+      });
+      return { ok: true };
+    }
 
     await this.enqueue(runId, async () => {
       const current = this.options.database.getOrchestration(runId);
@@ -297,6 +601,20 @@ export class Orchestrator {
       const current = this.options.database.getOrchestration(task.runId);
       if (!currentTask || !current) return;
       const now = Date.now();
+      const previousTerminalId = currentTask.terminalId;
+      if (previousTerminalId) {
+        this.clearTerminalTimeout(previousTerminalId);
+        this.workerSignals.delete(previousTerminalId);
+        this.options.terminals.stop(previousTerminalId);
+      }
+      const previousSession = this.options.database.getAgentSessionByTask(currentTask.id);
+      if (previousSession) {
+        previousSession.status = 'stopped';
+        previousSession.terminalId = undefined;
+        previousSession.updatedAt = now;
+        previousSession.stoppedAt = now;
+        this.options.database.upsertAgentSession(previousSession);
+      }
       currentTask.status = 'queued';
       currentTask.terminalId = undefined;
       currentTask.error = undefined;
@@ -348,6 +666,9 @@ export class Orchestrator {
     if (!task) throw new Error('Orchestrator task was not found.');
     if (!['accepted', 'rejected'].includes(request.decision)) throw new Error('Choose accept or reject.');
     if (task.status !== 'completed') throw new Error('Only completed tasks can be reviewed.');
+    if (this.options.database.getAgentSessionByTask(task.id)?.status === 'working') {
+      throw new Error('Wait for the agent follow-up to finish before reviewing this task.');
+    }
     if (['integrated', 'no_changes'].includes(task.integrationStatus ?? 'pending')) {
       throw new Error('Integrated tasks cannot be reviewed again.');
     }
@@ -383,6 +704,9 @@ export class Orchestrator {
     await this.enqueue(runId, async () => {
       const snapshot = this.requireRun(runId);
       if (snapshot.run.status !== 'completed') throw new Error('Finish the run before integrating results.');
+      if (snapshot.sessions?.some((session) => session.status === 'working')) {
+        throw new Error('Wait for agent follow-ups to finish before integrating results.');
+      }
       if (snapshot.tasks.some((task) => (task.reviewStatus ?? 'pending') === 'pending')) {
         throw new Error('Accept or reject every completed task first.');
       }
@@ -473,6 +797,9 @@ export class Orchestrator {
     await this.enqueue(runId, async () => {
       const snapshot = this.requireRun(runId);
       if (snapshot.run.integrationStatus !== 'integrated') throw new Error('Integrate accepted work first.');
+      if (snapshot.sessions?.some((session) => session.status === 'working')) {
+        throw new Error('Wait for agent follow-ups to finish before verifying results.');
+      }
       if (snapshot.run.verificationStatus === 'running') throw new Error('Verification is already running.');
       const capabilities = await this.options.detectProviders();
       const requested = request.provider;
@@ -484,6 +811,7 @@ export class Orchestrator {
       const terminal = await this.options.terminals.spawn({
         provider: provider.id,
         outputMode: 'event-stream',
+        role: 'verifier',
         avatarSeed: `${runId}-verification`,
         name: 'Verifier',
         cwd: snapshot.run.repoRoot,
@@ -515,15 +843,26 @@ export class Orchestrator {
     await this.enqueue(runId, async () => {
       const snapshot = this.requireRun(runId);
       if (snapshot.run.integrationStatus !== 'integrated') throw new Error('Integrate accepted work before cleanup.');
+      if (snapshot.sessions?.some((session) => ['starting', 'working', 'stopping'].includes(session.status))) {
+        throw new Error('Wait for agent follow-ups to finish before cleaning worktrees.');
+      }
       if (!['passed', 'failed'].includes(snapshot.run.verificationStatus ?? 'idle')) {
         throw new Error('Run final verification before cleanup.');
       }
       const failures: string[] = [];
       for (const task of snapshot.tasks) {
         if (!task.worktreeId) continue;
+        const session = this.options.database.getAgentSessionByTask(task.id);
+        if (session?.terminalId) {
+          this.clearTerminalTimeout(session.terminalId);
+          this.workerSignals.delete(session.terminalId);
+          this.options.terminals.stop(session.terminalId, true);
+          task.terminalId = undefined;
+        }
         const result = await this.options.worktrees.remove({ id: task.worktreeId, force: true });
         if (!result.ok) failures.push(result.error ?? task.title);
         else {
+          if (session) this.closeAgentSession(session, 'Run cleanup removed this agent worktree.');
           task.worktreeId = undefined;
           task.worktreePath = undefined;
           task.updatedAt = Date.now();
@@ -539,15 +878,27 @@ export class Orchestrator {
 
   handleTerminalData(event: TerminalDataEvent): void {
     const task = this.options.database.getOrchestrationTaskByTerminal(event.id);
-    if (!task || task.status !== 'starting') return;
-    void this.enqueue(task.runId, async () => {
-      const current = this.options.database.getOrchestrationTask(task.id);
-      if (!current || current.status !== 'starting') return;
-      current.status = 'running';
-      current.updatedAt = Date.now();
-      this.options.database.updateOrchestrationTask(current);
-      this.emit(current.runId);
-    });
+    if (!task) return;
+    if (task.status === 'starting') {
+      void this.enqueue(task.runId, async () => {
+        const current = this.options.database.getOrchestrationTask(task.id);
+        if (!current || current.status !== 'starting') return;
+        current.status = 'running';
+        current.updatedAt = Date.now();
+        this.options.database.updateOrchestrationTask(current);
+        this.emit(current.runId);
+      });
+    }
+
+    const signal = this.workerSignals.get(event.id);
+    if (!signal || signal.settling) return;
+    signal.transcript = appendBounded(signal.transcript, event.data, MAX_WORKER_SIGNAL_BUFFER);
+    const plain = stripTerminalControl(signal.transcript);
+    const blocker = interactiveBlocker(plain, signal.blockedMarker);
+    if (!blocker && !plain.includes(signal.completionMarker)) return;
+    signal.settling = true;
+    if (signal.kind === 'followup') void this.finishAgentFollowup(event.id, blocker);
+    else void this.finishInteractiveTask(event.id, blocker);
   }
 
   handleTerminalExit(event: TerminalExitEvent): void {
@@ -630,10 +981,36 @@ export class Orchestrator {
       });
       return;
     }
+    const activeSignal = this.workerSignals.get(event.id);
+    if (activeSignal?.kind === 'followup') {
+      activeSignal.exit = { exitCode: event.exitCode, exitedAt: event.exitedAt, timeoutReason };
+      if (!activeSignal.settling) {
+        activeSignal.settling = true;
+        void this.finishAgentFollowup(event.id);
+      }
+      return;
+    }
     void this.enqueue(task.runId, async () => {
       const current = this.options.database.getOrchestrationTask(task.id);
       const run = this.options.database.getOrchestration(task.runId)?.run;
-      if (!current || !run || isFinalTask(current.status)) return;
+      if (!current || !run) return;
+      if (isFinalTask(current.status)) {
+        const settledSession = this.options.database.getAgentSessionByTerminal(event.id);
+        if (settledSession) {
+          const stoppedByUser = settledSession.status === 'stopping';
+          settledSession.status = stoppedByUser || (!timeoutReason && event.exitCode === 0) ? 'stopped' : 'failed';
+          settledSession.updatedAt = event.exitedAt;
+          settledSession.lastActiveAt = event.exitedAt;
+          settledSession.stoppedAt = event.exitedAt;
+          settledSession.error = stoppedByUser ? undefined : timeoutReason ?? (event.exitCode === 0
+            ? settledSession.error
+            : `${DEFAULT_AGENT_NAMES[settledSession.provider]} exited with code ${event.exitCode}.`);
+          this.options.database.upsertAgentSession(settledSession);
+        }
+        this.workerSignals.delete(event.id);
+        this.emit(current.runId);
+        return;
+      }
       const stopped = current.status === 'stopping' || run.status === 'stopping' || run.status === 'stopped';
       const replay = this.providerReplay(current.provider, this.safeReplay(event.id));
       current.summary = summaryFromReplay(replay);
@@ -645,6 +1022,7 @@ export class Orchestrator {
       current.updatedAt = event.exitedAt;
       current.completedAt = event.exitedAt;
       this.options.database.updateOrchestrationTask(current);
+      this.workerSignals.delete(event.id);
       const session = this.options.database.getAgentSessionByTask(current.id);
       if (session) {
         session.status = current.status === 'failed' ? 'failed' : 'stopped';
@@ -671,6 +1049,222 @@ export class Orchestrator {
       this.reconcileRun(current.runId);
       this.emit(current.runId);
     }).then(() => this.pump(task.runId));
+  }
+
+  private async finishInteractiveTask(terminalId: string, blocker?: string): Promise<void> {
+    const signal = this.workerSignals.get(terminalId);
+    if (!signal) return;
+    const task = this.options.database.getOrchestrationTask(signal.taskId);
+    if (!task) {
+      this.workerSignals.delete(terminalId);
+      return;
+    }
+    this.clearTerminalTimeout(terminalId);
+    await this.enqueue(task.runId, async () => {
+      const current = this.options.database.getOrchestrationTask(task.id);
+      if (!current || isFinalTask(current.status)) return;
+      const now = Date.now();
+      const replay = this.safeReplay(terminalId);
+      const transcript = replay.data || signal.transcript;
+      current.summary = interactiveSummary(transcript, signal.completionMarker, signal.blockedMarker);
+      current.blocker = blocker;
+      current.status = blocker ? 'blocked' : 'completed';
+      current.error = undefined;
+      current.updatedAt = now;
+      current.completedAt = now;
+      this.options.database.updateOrchestrationTask(current);
+
+      const session = this.options.database.getAgentSessionByTerminal(terminalId);
+      if (session) {
+        session.status = 'idle';
+        session.updatedAt = now;
+        session.lastActiveAt = now;
+        session.stoppedAt = undefined;
+        session.error = blocker;
+        this.options.database.upsertAgentSession(session);
+      }
+      this.options.database.appendEvent('orchestration.task.finished', {
+        runId: current.runId,
+        taskId: current.id,
+        sessionId: session?.id,
+        status: current.status,
+        terminalId,
+        processAlive: true
+      });
+      this.message(
+        current.runId,
+        current.id,
+        blocker ? 'blocker' : 'result',
+        current.agentName ?? personNameForSeed(current.id),
+        blocker ?? current.summary ?? `${current.title} finished.`
+      );
+      this.reconcileRun(current.runId);
+      this.emit(current.runId);
+    });
+    this.workerSignals.delete(terminalId);
+    await this.pump(task.runId);
+  }
+
+  private async finishAgentFollowup(terminalId: string, blocker?: string): Promise<void> {
+    const signal = this.workerSignals.get(terminalId);
+    if (!signal?.sessionId) return;
+    const session = this.options.database.getAgentSession(signal.sessionId);
+    if (!session) {
+      this.workerSignals.delete(terminalId);
+      return;
+    }
+    this.clearTerminalTimeout(terminalId);
+    const checkpoint = await this.captureTaskDiff(signal.taskId);
+    await this.enqueue(session.runId, async () => {
+      const current = this.options.database.getAgentSession(session.id);
+      if (!current || current.terminalId !== terminalId) return;
+      const now = Date.now();
+      const task = this.options.database.getOrchestrationTask(signal.taskId);
+      const snapshot = this.options.database.getOrchestration(current.runId);
+      const comparison = signal.baselineDiff && checkpoint.fingerprint
+        ? signal.baselineDiff === checkpoint.fingerprint ? 'unchanged' : 'changed'
+        : 'unavailable';
+      const replay = this.safeReplay(terminalId);
+      const stoppedByUser = signal.stopRequested === true;
+      const followupError = !stoppedByUser && signal.exit && (signal.exit.timeoutReason || signal.exit.exitCode !== 0)
+        ? signal.exit.timeoutReason
+          ?? providerFailureMessage(DEFAULT_AGENT_NAMES[current.provider], replay, signal.exit.exitCode)
+        : undefined;
+      const needsReconciliation = comparison === 'changed'
+        || Boolean(blocker)
+        || (signal.baselineTaskStatus !== undefined && signal.baselineTaskStatus !== 'completed');
+      current.status = stoppedByUser ? 'stopped' : signal.exit ? followupError ? 'failed' : 'stopped' : 'idle';
+      current.updatedAt = signal.exit?.exitedAt ?? now;
+      current.lastActiveAt = current.updatedAt;
+      current.stoppedAt = stoppedByUser ? signal.exit?.exitedAt ?? now : signal.exit?.exitedAt;
+      current.error = blocker ?? followupError;
+      this.options.database.upsertAgentSession(current);
+
+      if (task && snapshot && needsReconciliation) {
+        if (snapshot.run.synthesisStatus === 'running' && snapshot.run.synthesisTerminalId) {
+          this.clearTerminalTimeout(snapshot.run.synthesisTerminalId);
+          this.options.terminals.stop(snapshot.run.synthesisTerminalId);
+        }
+        if (snapshot.run.verificationStatus === 'running' && snapshot.run.verificationTerminalId) {
+          this.clearTerminalTimeout(snapshot.run.verificationTerminalId);
+          this.options.terminals.stop(snapshot.run.verificationTerminalId);
+        }
+
+        const transcript = signal.transcript || replay.data;
+        task.summary = interactiveSummary(transcript, signal.completionMarker, signal.blockedMarker);
+        task.status = blocker ? 'blocked' : stoppedByUser ? 'stopped' : followupError ? 'failed' : 'completed';
+        task.blocker = blocker;
+        task.error = followupError;
+        task.completedAt = signal.exit?.exitedAt ?? now;
+        task.updatedAt = task.completedAt;
+        task.reviewStatus = 'pending';
+        task.integrationStatus = 'pending';
+        task.integrationCommit = undefined;
+        task.integrationError = undefined;
+        task.reviewedAt = undefined;
+        task.integratedAt = undefined;
+
+        snapshot.run.status = task.status === 'blocked'
+          ? 'blocked'
+          : task.status === 'failed' ? 'failed' : task.status === 'stopped' ? 'stopped' : 'queued';
+        snapshot.run.error = undefined;
+        snapshot.run.completedAt = undefined;
+        snapshot.run.integrationStatus = 'pending';
+        snapshot.run.integrationError = undefined;
+        snapshot.run.verificationStatus = 'idle';
+        snapshot.run.verificationProvider = undefined;
+        snapshot.run.verificationTerminalId = undefined;
+        snapshot.run.verificationSummary = undefined;
+        snapshot.run.verificationError = undefined;
+        snapshot.run.synthesisStatus = 'idle';
+        snapshot.run.synthesisProvider = undefined;
+        snapshot.run.synthesisModel = undefined;
+        snapshot.run.synthesisTerminalId = undefined;
+        snapshot.run.finalSummary = undefined;
+        snapshot.run.synthesisError = undefined;
+        snapshot.run.updatedAt = now;
+        this.options.database.updateOrchestrationTask(task);
+        this.options.database.updateOrchestrationRun(snapshot.run);
+        this.message(
+          current.runId,
+          task.id,
+          blocker || followupError || stoppedByUser ? 'blocker' : 'result',
+          current.agentName,
+          blocker ?? followupError ?? (stoppedByUser
+            ? `${task.title} stopped during a follow-up. Resume the agent before reviewing partial work.`
+            : comparison === 'changed'
+            ? `${task.title} changed after a follow-up. Review and integration are required again.`
+            : task.summary ?? `${task.title} is ready again.`)
+        );
+        this.reconcileRun(current.runId);
+      } else {
+        this.message(
+          current.runId,
+          task?.id,
+          'status',
+          current.agentName,
+          stoppedByUser
+            ? `${current.agentName}'s follow-up was stopped without changing the worktree.`
+            : followupError
+            ? `${current.agentName}'s follow-up session ended without changing the worktree.`
+            : comparison === 'unchanged'
+            ? `${current.agentName} answered the follow-up without changing the worktree.`
+            : `${current.agentName} answered the follow-up; Relay could not compare the worktree.`
+        );
+      }
+      this.options.database.appendEvent('orchestration.agent_session.followup_finished', {
+        sessionId: current.id,
+        runId: current.runId,
+        terminalId,
+        status: blocker ? 'blocked' : stoppedByUser ? 'stopped' : followupError ? 'failed' : 'completed',
+        exitCode: signal.exit?.exitCode,
+        worktreeComparison: comparison,
+        reconciled: needsReconciliation,
+        worktreeCheckpointError: checkpoint.error ?? signal.baselineDiffError
+      });
+      this.emit(current.runId);
+    });
+    this.workerSignals.delete(terminalId);
+  }
+
+  private async captureTaskDiff(taskId: string): Promise<{ fingerprint?: string; error?: string }> {
+    const task = this.options.database.getOrchestrationTask(taskId);
+    if (!task?.worktreeId) return { error: 'The task worktree is unavailable.' };
+    try {
+      const diff = await this.options.worktrees.diff(task.worktreeId, task.id);
+      const fingerprint = diff.fingerprint ?? createHash('sha256').update(JSON.stringify({
+        branch: diff.branch,
+        baseBranch: diff.baseBranch,
+        files: [...diff.files].sort((left, right) => left.path.localeCompare(right.path)),
+        additions: diff.additions,
+        deletions: diff.deletions,
+        patch: diff.patch,
+        truncated: diff.truncated
+      })).digest('hex');
+      return { fingerprint };
+    } catch (error) {
+      const message = messageOf(error);
+      this.options.logger.warn({ taskId, error: message }, 'Could not checkpoint the agent worktree');
+      return { error: message };
+    }
+  }
+
+  private closeAgentSession(session: AgentSession, reason: string): void {
+    const now = Date.now();
+    session.status = 'closed';
+    session.worktreeId = undefined;
+    session.worktreePath = undefined;
+    session.terminalId = undefined;
+    session.updatedAt = now;
+    session.lastActiveAt = now;
+    session.stoppedAt = now;
+    session.error = undefined;
+    this.options.database.upsertAgentSession(session);
+    this.options.database.appendEvent('orchestration.agent_session.closed', {
+      sessionId: session.id,
+      runId: session.runId,
+      reason
+    });
   }
 
   private async startPlanning(run: OrchestrationRun, fallback: PlannedTask[]): Promise<void> {
@@ -844,20 +1438,32 @@ export class Orchestrator {
         this.emit(run.id);
       }
 
+      const previousSession = (task.agentSessionId
+        ? this.options.database.getAgentSession(task.agentSessionId)
+        : undefined) ?? this.options.database.getAgentSessionByTask(task.id);
       session = this.prepareAgentSession(run, task);
-
-      const prompt = workerPrompt(run, task, this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME);
-      const terminal = await this.options.terminals.spawn({
+      const completionToken = randomUUID().replace(/-/g, '').slice(0, 20);
+      const prompt = workerPrompt(
+        run,
+        task,
+        this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME,
+        completionToken
+      );
+      const spawnedTerminal = await this.options.terminals.spawn({
         provider: task.provider,
-        outputMode: 'event-stream',
+        outputMode: 'terminal',
         avatarSeed: task.avatarSeed ?? task.id,
         cwd: task.worktreePath,
         name: task.agentName ?? personNameForSeed(task.id),
         cols: 120,
         rows: 32,
-        args: providerAdapter(task.provider).workerArgs(prompt, task.model)
+        args: previousSession?.nativeSessionId
+          ? providerAdapter(task.provider).resumeWorkerArgs(task.model, previousSession.nativeSessionId)
+          : providerAdapter(task.provider).interactiveWorkerArgs(task.model, session.nativeSessionId)
       });
-      this.armTerminalTimeout(terminal.id, this.phaseTimeout('worker', WORKER_TIMEOUT_MS), 'Worker timed out after 45 minutes.');
+      const terminal = this.options.prepareWorkerTerminal
+        ? await this.options.prepareWorkerTerminal(spawnedTerminal, task.worktreePath)
+        : spawnedTerminal;
       task.terminalId = terminal.id;
       task.status = 'running';
       task.error = undefined;
@@ -870,6 +1476,18 @@ export class Orchestrator {
       session.error = undefined;
       this.options.database.upsertAgentSession(session);
       this.options.database.updateOrchestrationTask(task);
+      this.workerSignals.set(terminal.id, {
+        kind: 'task',
+        taskId: task.id,
+        completionMarker: `RELAY_TASK_COMPLETE:${completionToken}`,
+        blockedMarker: `RELAY_TASK_BLOCKED:${completionToken}:`,
+        transcript: '',
+        settling: false
+      });
+      this.armTerminalTimeout(terminal.id, this.phaseTimeout('worker', WORKER_TIMEOUT_MS), 'Worker timed out after 45 minutes.');
+      const submitted = await this.options.terminals.submit(terminal.id, prompt);
+      if (!submitted.ok) throw new Error(submitted.error ?? 'Could not submit the worker task.');
+      void this.captureNativeSessionId(session.id, terminal.id);
       this.options.database.appendEvent('orchestration.task.started', {
         runId: run.id,
         taskId: task.id,
@@ -884,6 +1502,11 @@ export class Orchestrator {
         'Orchestrator worker started'
       );
     } catch (error) {
+      if (session?.terminalId) {
+        this.clearTerminalTimeout(session.terminalId);
+        this.workerSignals.delete(session.terminalId);
+        this.options.terminals.stop(session.terminalId);
+      }
       task.status = 'failed';
       task.error = messageOf(error);
       task.updatedAt = Date.now();
@@ -1140,6 +1763,7 @@ export class Orchestrator {
           agentName: task.agentName ?? personNameForSeed(task.id),
           avatarSeed: task.avatarSeed ?? task.id,
           model: task.model,
+          nativeSessionId: task.provider === 'claude' ? randomUUID() : undefined,
           createdAt: now,
           updatedAt: now,
           startedAt: now,
@@ -1161,6 +1785,40 @@ export class Orchestrator {
       });
     }
     return session;
+  }
+
+  private async captureNativeSessionId(sessionId: string, terminalId: string): Promise<void> {
+    if (!this.options.resolveWorkerSessionId || this.nativeSessionLookups.has(terminalId)) return;
+    const session = this.options.database.getAgentSession(sessionId);
+    if (!session || session.nativeSessionId || !session.worktreePath) return;
+    this.nativeSessionLookups.add(terminalId);
+    try {
+      const nativeSessionId = await this.options.resolveWorkerSessionId(
+        session.provider,
+        session.worktreePath,
+        session.startedAt ?? session.createdAt
+      );
+      if (!nativeSessionId) return;
+      await this.enqueue(session.runId, async () => {
+        const current = this.options.database.getAgentSession(session.id);
+        if (!current || current.nativeSessionId || current.terminalId !== terminalId) return;
+        current.nativeSessionId = nativeSessionId;
+        current.updatedAt = Date.now();
+        this.options.database.upsertAgentSession(current);
+        this.options.database.appendEvent('orchestration.agent_session.identity_captured', {
+          sessionId: current.id,
+          runId: current.runId,
+          terminalId,
+          provider: current.provider,
+          nativeSessionId
+        });
+        this.emit(current.runId);
+      });
+    } catch (error) {
+      this.options.logger.warn({ error, sessionId, terminalId }, 'Could not capture provider session identity');
+    } finally {
+      this.nativeSessionLookups.delete(terminalId);
+    }
   }
 
   private emit(runId: string): void {
@@ -1186,7 +1844,12 @@ export class Orchestrator {
   }
 }
 
-function workerPrompt(run: OrchestrationRun, task: OrchestrationTask, orchestratorName: string): string {
+function workerPrompt(
+  run: OrchestrationRun,
+  task: OrchestrationTask,
+  orchestratorName: string,
+  completionToken: string
+): string {
   return [
     `You are ${task.agentName ?? personNameForSeed(task.id)}, a Relay worker coordinated by ${orchestratorName}.`,
     `Provider: ${DEFAULT_AGENT_NAMES[task.provider]}.`,
@@ -1198,9 +1861,26 @@ function workerPrompt(run: OrchestrationRun, task: OrchestrationTask, orchestrat
     `Branch: ${task.branch ?? '(preparing)'}`,
     'Work only inside the current worktree. Do not modify other checkouts or merge branches.',
     'Do not commit unless the objective explicitly asks for a commit.',
-    'If you cannot finish, end the report with exactly `RELAY_BLOCKER: <short reason>` so Michael can route it.',
-    'Inspect existing code first, implement the task, run proportionate checks, then give a concise final summary.'
+    'Inspect existing code first, implement the task, run proportionate checks, then give a concise final summary.',
+    `When successful, finish with a machine marker made by joining these two parts with no spaces: ` +
+      `\`RELAY_TASK_\` + \`COMPLETE:${completionToken}\`.`,
+    `If blocked, finish instead with a marker made by joining \`RELAY_TASK_\` + ` +
+      `\`BLOCKED:${completionToken}: <short reason>\` with no space around the plus sign.`,
+    'After emitting either marker, wait for the next instruction and do not exit the CLI.'
   ].filter(Boolean).join('\n\n').slice(0, 4_000);
+}
+
+function agentFollowupPrompt(prompt: string, completionToken: string): string {
+  return [
+    prompt,
+    'This is a follow-up in your existing Relay agent session. Keep working only inside the current worktree.',
+    'Complete the request, run proportionate checks, and answer concisely.',
+    `When ready for another instruction, finish with a marker made by joining \`RELAY_AGENT_\` + ` +
+      `\`READY:${completionToken}\` with no spaces.`,
+    `If blocked, finish instead by joining \`RELAY_AGENT_\` + ` +
+      `\`BLOCKED:${completionToken}: <short reason>\` with no spaces.`,
+    'After emitting the marker, remain open and wait for the next instruction.'
+  ].join('\n\n').slice(0, MAX_AGENT_FOLLOWUP_LENGTH + 1_000);
 }
 
 function verificationPrompt(run: OrchestrationRun, orchestratorName: string): string {
@@ -1253,6 +1933,32 @@ function summaryFromReplay(replay: TerminalReplay): string | undefined {
   const plain = replay.data
     .replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\x1B\\))/g, '')
     .replace(/\r/g, '')
+    .trim();
+  return plain ? plain.slice(-4_000) : undefined;
+}
+
+function appendBounded(current: string, chunk: string, maximum: number): string {
+  const combined = current + chunk;
+  return combined.length <= maximum ? combined : combined.slice(-maximum);
+}
+
+function stripTerminalControl(value: string): string {
+  return value
+    .replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\x1B\\))/g, '')
+    .replace(/\r/g, '');
+}
+
+function interactiveBlocker(transcript: string, marker: string): string | undefined {
+  const index = transcript.lastIndexOf(marker);
+  if (index < 0) return undefined;
+  const reason = transcript.slice(index + marker.length).split('\n')[0]?.replace(/\s+/g, ' ').trim();
+  return reason ? reason.slice(0, 500) : 'The agent reported a blocker.';
+}
+
+function interactiveSummary(transcript: string, completionMarker: string, blockedMarker: string): string | undefined {
+  const plain = stripTerminalControl(transcript)
+    .replaceAll(completionMarker, '')
+    .replaceAll(blockedMarker, 'RELAY_BLOCKER:')
     .trim();
   return plain ? plain.slice(-4_000) : undefined;
 }

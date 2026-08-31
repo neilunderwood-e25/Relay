@@ -117,7 +117,13 @@ export class RelayControlProtocol {
     const synchronizationKey = kind === 'run.verified'
       ? `${kind}:${snapshot.run.verificationStatus}`
       : kind;
-    if (!kind || !synchronizationKey || this.synchronizedRuns.get(snapshot.run.id) === synchronizationKey) return null;
+    if (!kind || !synchronizationKey) {
+      // A follow-up can reopen a completed run. Forget its terminal state so Michael
+      // receives the newly reconciled completion instead of treating it as a duplicate.
+      this.synchronizedRuns.delete(snapshot.run.id);
+      return null;
+    }
+    if (this.synchronizedRuns.get(snapshot.run.id) === synchronizationKey) return null;
     this.synchronizedRuns.set(snapshot.run.id, synchronizationKey);
     return this.dispatch({
       kind,

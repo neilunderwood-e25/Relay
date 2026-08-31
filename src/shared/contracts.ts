@@ -278,7 +278,7 @@ export interface RecoveryResult {
 }
 
 export type TerminalStatus = 'starting' | 'running' | 'stopping' | 'exited';
-export type TerminalRole = 'worker' | 'orchestrator' | 'planner' | 'synthesizer';
+export type TerminalRole = 'worker' | 'orchestrator' | 'planner' | 'synthesizer' | 'verifier';
 export type TerminalOutputMode = 'terminal' | 'event-stream';
 
 export interface TerminalSpawnRequest {
@@ -433,7 +433,15 @@ export type VerificationStatus = 'idle' | 'running' | 'passed' | 'failed';
 export type PlanningSource = 'model' | 'fallback';
 export type SynthesisStatus = 'idle' | 'running' | 'completed' | 'fallback';
 
-export type AgentSessionStatus = 'starting' | 'working' | 'idle' | 'stopped' | 'resumable' | 'failed';
+export type AgentSessionStatus =
+  | 'starting'
+  | 'working'
+  | 'idle'
+  | 'stopping'
+  | 'stopped'
+  | 'resumable'
+  | 'failed'
+  | 'closed';
 
 /**
  * Durable identity for a worker conversation. The PTY is intentionally only one
@@ -461,6 +469,14 @@ export interface AgentSession {
   lastActiveAt?: number;
   stoppedAt?: number;
   error?: string;
+}
+
+export interface AgentSessionRequest {
+  sessionId: string;
+}
+
+export interface AgentSessionInputRequest extends AgentSessionRequest {
+  prompt: string;
 }
 
 export interface OrchestrationRun {
@@ -592,6 +608,8 @@ export interface TaskDiffSnapshot {
   deletions: number;
   patch: string;
   truncated: boolean;
+  /** Stable identity for the complete diff, including content omitted from patch. */
+  fingerprint?: string;
 }
 
 export interface WorktreeIntegrationResult {
@@ -626,6 +644,10 @@ export interface RelayApi {
   integrateOrchestration(request: OrchestrationRunRequest): Promise<OrchestrationSnapshot>;
   verifyOrchestration(request: OrchestrationVerifyRequest): Promise<OrchestrationSnapshot>;
   cleanupOrchestration(request: OrchestrationRunRequest): Promise<OrchestrationSnapshot>;
+  listAgentSessions(repoRoot?: string): Promise<AgentSession[]>;
+  submitAgentSessionInput(request: AgentSessionInputRequest): Promise<AgentSession>;
+  restartAgentSession(request: AgentSessionRequest): Promise<AgentSession>;
+  stopAgentSession(request: AgentSessionRequest): Promise<OperationResult>;
   listActivity(request?: ActivityListRequest): Promise<ActivityPage>;
   updatePreferences(request: PreferencesUpdateRequest): Promise<RelayPreferences>;
   getDiagnostics(): Promise<RuntimeDiagnostics>;

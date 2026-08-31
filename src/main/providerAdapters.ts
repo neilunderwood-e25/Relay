@@ -7,6 +7,8 @@ export interface ProviderAdapter {
   versionArgs: string[];
   orchestratorArgs(prompt: string, hiveRoot: string, model?: string | null): string[];
   planningArgs(prompt: string, model?: string | null): string[];
+  interactiveWorkerArgs(model?: string | null, nativeSessionId?: string): string[];
+  resumeWorkerArgs(model?: string | null, nativeSessionId?: string): string[];
   workerArgs(prompt: string, model?: string | null): string[];
   verificationArgs(prompt: string, model?: string | null): string[];
 }
@@ -32,7 +34,21 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
     ],
     planningArgs: (prompt, model) => [
       ...(model ? ['--model', model] : []),
-      '--print', '--permission-mode', 'plan', '--verbose', '--output-format', 'stream-json', '--no-session-persistence', prompt
+      '--print', '--permission-mode', 'plan', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '--no-session-persistence', prompt
+    ],
+    interactiveWorkerArgs: (model, nativeSessionId) => [
+      ...(model ? ['--model', model] : []),
+      ...(nativeSessionId ? ['--session-id', nativeSessionId] : []),
+      '--permission-mode', 'acceptEdits',
+      '--allowedTools', 'Bash,Read,Glob,Grep,Edit,Write',
+      '--no-chrome'
+    ],
+    resumeWorkerArgs: (model, nativeSessionId) => [
+      ...(model ? ['--model', model] : []),
+      '--permission-mode', 'acceptEdits',
+      '--allowedTools', 'Bash,Read,Glob,Grep,Edit,Write',
+      '--no-chrome',
+      ...(nativeSessionId ? ['--resume', nativeSessionId] : ['--continue'])
     ],
     workerArgs: (prompt, model) => [
       ...(model ? ['--model', model] : []),
@@ -41,6 +57,7 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
       '--allowedTools', 'Bash,Read,Glob,Grep,Edit,Write',
       '--verbose',
       '--output-format', 'stream-json',
+      '--include-partial-messages',
       '--no-session-persistence',
       prompt
     ],
@@ -52,6 +69,7 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
       '--allowedTools', 'Bash,Read,Glob,Grep',
       '--verbose',
       '--output-format', 'stream-json',
+      '--include-partial-messages',
       '--no-session-persistence',
       prompt
     ]
@@ -72,6 +90,17 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
     planningArgs: (prompt, model) => [
       '--ask-for-approval', 'never', ...(model ? ['--model', model] : []),
       'exec', '--sandbox', 'read-only', '--color', 'never', '--json', '--ephemeral', prompt
+    ],
+    interactiveWorkerArgs: (model) => [
+      '--ask-for-approval', 'never', ...(model ? ['--model', model] : []),
+      '--sandbox', 'workspace-write',
+      '--no-alt-screen'
+    ],
+    resumeWorkerArgs: (model, nativeSessionId) => [
+      '--ask-for-approval', 'never', ...(model ? ['--model', model] : []),
+      '--sandbox', 'workspace-write',
+      '--no-alt-screen',
+      'resume', ...(nativeSessionId ? [nativeSessionId] : ['--last'])
     ],
     workerArgs: (prompt, model) => [
       '--ask-for-approval', 'never', ...(model ? ['--model', model] : []),

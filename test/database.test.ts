@@ -337,7 +337,7 @@ describe('RelayDatabase', () => {
         runId: 'run-session-recovery',
         initialTaskId: 'task-session-recovery',
         provider: 'claude',
-        status: 'working',
+        status: 'stopping',
         terminalId: 'terminal-recovery',
         nativeSessionId: 'claude-session-uuid',
         agentName: 'Morgan',

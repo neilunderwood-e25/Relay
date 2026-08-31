@@ -226,7 +226,12 @@ export class WorktreeManager {
       additions: files.reduce((total, file) => total + file.additions, 0),
       deletions: files.reduce((total, file) => total + file.deletions, 0),
       patch: fullPatch.slice(0, MAX_PATCH_OUTPUT),
-      truncated: fullPatch.length > MAX_PATCH_OUTPUT || allUntrackedPaths.length > MAX_UNTRACKED_DIFFS
+      truncated: fullPatch.length > MAX_PATCH_OUTPUT || allUntrackedPaths.length > MAX_UNTRACKED_DIFFS,
+      fingerprint: createHash('sha256')
+        .update(fullPatch)
+        .update('\0')
+        .update(allUntrackedPaths.join('\0'))
+        .digest('hex')
     };
   }
 
@@ -455,6 +460,15 @@ export class WorktreeManager {
     }
     const integratedHead = await runGit(record.repoRoot, ['rev-parse', 'HEAD']);
     if (!integratedHead.ok) throw new Error(gitError(integratedHead));
+    // Keep a reusable agent worktree aligned with the integrated project. Future
+    // follow-ups then contain only their new delta and can be integrated again.
+    const align = await runGit(record.path, ['reset', '--hard', integratedHead.stdout.trim()]);
+    if (!align.ok) {
+      this.options.logger.warn(
+        { worktreeId, branch: record.branch, error: gitError(align) },
+        'Integrated worktree could not be aligned with the project head'
+      );
+    }
     this.options.database.appendEvent('worktree.integrated', {
       worktreeId,
       branch: record.branch,

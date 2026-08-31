@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { OrchestrationSnapshot, OrchestrationTask, WorktreeRecord } from '../src/shared/contracts';
+import type { AgentSession, OrchestrationSnapshot, OrchestrationTask, WorktreeRecord } from '../src/shared/contracts';
 import { SafetyBoundary, SafetyBoundaryError } from '../src/main/safety';
 
 function fixture() {
@@ -20,7 +20,12 @@ function fixture() {
     role: 'builder', deliverable: 'Code', provider: 'codex', status: 'running', attempt: 1,
     createdAt: 1, updatedAt: 1
   } as OrchestrationTask;
+  const agentSession = {
+    id: 'session-current', runId: run.run.id, initialTaskId: task.id, provider: 'codex', status: 'idle',
+    agentName: 'Sam', avatarSeed: 'sam', createdAt: 1, updatedAt: 1
+  } as AgentSession;
   const database = {
+    getAgentSession: vi.fn((id: string) => id === agentSession.id ? agentSession : undefined),
     getOrchestration: vi.fn((id: string) => id === run.run.id ? run : id === foreignRun.run.id ? foreignRun : undefined),
     getOrchestrationTask: vi.fn((id: string) => id === task.id ? task : undefined),
     getWorktree: vi.fn((_id: string): WorktreeRecord | undefined => undefined),
@@ -45,6 +50,7 @@ describe('SafetyBoundary', () => {
     const { boundary } = fixture();
     expect(boundary.assertRun('run-current', 'run.stop').run.id).toBe('run-current');
     expect(boundary.assertTask('task-current', 'task.retry').id).toBe('task-current');
+    expect(boundary.assertAgentSession('session-current', 'agent-session.stop').id).toBe('session-current');
     expect(() => boundary.assertRun('run-foreign', 'run.stop')).toThrow('outside the selected project');
     expect(() => boundary.assertTask('missing', 'task.retry')).toThrow('task was not found');
   });
@@ -62,5 +68,22 @@ describe('SafetyBoundary', () => {
     }, allowed)).toThrow('cannot supply CLI arguments');
     expect(() => boundary.assertRendererTerminal({ provider: 'codex', cwd: '/tmp' }, allowed))
       .toThrow('outside the selected project worktrees');
+  });
+
+  it('allows interactive terminals but protects internal event-stream terminals', () => {
+    const { boundary, events } = fixture();
+    const worker = {
+      id: 'worker-1', role: 'worker', name: 'Sam', provider: 'codex', command: 'codex',
+      cwd: '/projects/current', pid: 10, cols: 120, rows: 32, status: 'running',
+      createdAt: 1, lastOutputAt: 1, hasOutput: true, lastSequence: 1, outputMode: 'terminal'
+    } as const;
+    const planner = { ...worker, id: 'planner-1', role: 'planner', outputMode: 'event-stream' } as const;
+    expect(boundary.assertRendererTerminalControl(worker, 'terminal.write').id).toBe('worker-1');
+    expect(boundary.assertRendererTerminalView(planner, 'terminal.replay').id).toBe('planner-1');
+    expect(() => boundary.assertRendererTerminalControl(planner, 'terminal.write'))
+      .toThrow('Internal Relay terminals');
+    expect(() => boundary.assertRendererTerminalControl(undefined, 'terminal.stop'))
+      .toThrow('terminal was not found');
+    expect(events.filter(({ type }) => type === 'app.safety.denied')).toHaveLength(2);
   });
 });

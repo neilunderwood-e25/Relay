@@ -78,12 +78,15 @@ describe('release readiness contract', () => {
     expect(adapters).toContain("'--restricted'");
   });
 
-  it('gates Claude workspace trust to the Relay Hive before control delivery', () => {
+  it('gates CLI workspace trust to Relay-managed directories before task delivery', () => {
     const bootstrap = readFileSync('src/main/orchestratorBootstrap.ts', 'utf8');
     const main = readFileSync('src/main/index.ts', 'utf8');
     expect(bootstrap).toContain('resolve(initial.cwd) !== resolve(hiveAgentRoot)');
-    expect(bootstrap).toContain("output.includes('Quick safety check:')");
-    expect(bootstrap).toContain("output.includes('Yes, I trust this folder')");
+    expect(bootstrap).toContain("compact.includes('quicksafetycheck:')");
+    expect(bootstrap).toContain("compact.includes('yes,itrustthisfolder')");
+    expect(bootstrap).toContain("compact.includes('doyoutrustthecontentsofthisdirectory?')");
+    expect(bootstrap).toContain('resolve(initial.cwd) !== resolve(managedWorktreePath)');
     expect(main).toContain('await prepareOrchestratorTerminal');
+    expect(main).toContain('await prepareWorkerTerminal');
   });
 });

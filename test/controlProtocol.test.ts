@@ -40,6 +40,12 @@ describe('RelayControlProtocol', () => {
     protocol.dispatch(commandInput('run.verification_requested'));
     const completed = protocol.syncSnapshot(completedSnapshot());
     const duplicate = protocol.syncSnapshot(completedSnapshot());
+    const reopened = {
+      ...completedSnapshot(),
+      run: { ...completedSnapshot().run, status: 'summarizing' as const }
+    };
+    expect(protocol.syncSnapshot(reopened)).toBeNull();
+    const reconciled = protocol.syncSnapshot(completedSnapshot());
     const verified = protocol.syncSnapshot(completedSnapshot('passed'));
     await protocol.flush();
 
@@ -47,18 +53,20 @@ describe('RelayControlProtocol', () => {
       { id: 'control-test-1', kind: 'run.started' },
       { id: 'control-test-2', kind: 'run.verification_requested' },
       { id: 'control-test-3', kind: 'run.completed' },
-      { id: 'control-test-4', kind: 'run.verified' }
+      { id: 'control-test-4', kind: 'run.completed' },
+      { id: 'control-test-5', kind: 'run.verified' }
     ]);
     expect(completed?.kind).toBe('run.completed');
     expect(completed?.actor).toBe('relay');
     expect(duplicate).toBeNull();
+    expect(reconciled?.kind).toBe('run.completed');
     expect(verified?.kind).toBe('run.verified');
-    expect(submissions).toHaveLength(4);
+    expect(submissions).toHaveLength(5);
     expect(submissions[0]).toContain('[RELAY CONTROL control-test-1]');
     expect(submissions[0]).toContain('Do not duplicate workers or edit the main checkout.');
     expect(submissions[1]).toContain('[RELAY CONTROL control-test-2]');
     expect(submissions[2]).toContain('run.completed');
-    expect(events.filter(({ kind }) => kind === 'control.delivered')).toHaveLength(4);
+    expect(events.filter(({ kind }) => kind === 'control.delivered')).toHaveLength(5);
   });
 
   it('keeps failed commands durable and continues draining the queue', async () => {

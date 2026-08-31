@@ -3,6 +3,8 @@ import { join, resolve } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, session, shell } from 'electron';
 import type { Logger } from 'pino';
 import type {
+  AgentSessionInputRequest,
+  AgentSessionRequest,
   AgentProfileSaveRequest,
   ActivityListRequest,
   AppSnapshot,
@@ -46,8 +48,9 @@ import { LiveMonitorProjection } from './liveProjection';
 import { createAppLogger } from './logger';
 import { Orchestrator } from './orchestrator';
 import { OrchestratorActionBridge } from './orchestratorActions';
-import { prepareOrchestratorTerminal } from './orchestratorBootstrap';
+import { prepareOrchestratorTerminal, prepareWorkerTerminal } from './orchestratorBootstrap';
 import { providerAdapter } from './providerAdapters';
+import { resolveNativeWorkerSessionId } from './providerSessions';
 import { detectProviders } from './providers';
 import { PtyManager } from './pty';
 import { normalizePreferences } from './preferences';
@@ -439,6 +442,20 @@ function bootstrapWorkspace(config: WorkspaceConfig): void {
         provider: workspaceConfig.orchestratorProvider,
         model: workspaceConfig.orchestratorModel
       }),
+      prepareWorkerTerminal: async (terminal, worktreePath) => {
+        const prepared = await prepareWorkerTerminal(terminal, worktreePath, ptyManager!);
+        if (prepared.acceptedWorkspaceTrust) {
+          nextDatabase.appendEvent('terminal.workspace_trusted', {
+            terminalId: terminal.id,
+            provider: terminal.provider,
+            cwd: terminal.cwd,
+            role: 'worker'
+          });
+          logger?.info({ terminalId: terminal.id, cwd: terminal.cwd }, 'Relay worktree trust accepted for worker');
+        }
+        return prepared.terminal;
+      },
+      resolveWorkerSessionId: resolveNativeWorkerSessionId,
       onCoordinationMessage: (message) => nextHive.appendMessage(message),
       onUpdate: (snapshot) => {
         nextHive.syncOrchestrations(nextDatabase.listOrchestrations());
@@ -479,6 +496,7 @@ function bootstrapWorkspace(config: WorkspaceConfig): void {
     });
 
     const recoveredItems = nextOrchestrator.recover();
+    const recoveryFailures = nextOrchestrator.reconcileRecoveredSessions();
     nextHive.syncOrchestrations(nextDatabase.listOrchestrations());
     nextDatabase.appendEvent('app.started', {
       version: app.getVersion(),
@@ -496,8 +514,13 @@ function bootstrapWorkspace(config: WorkspaceConfig): void {
     nextActionBridge.start();
     const replayedControls = nextControlProtocol.recover();
     nextHive.recordRecovery(recoveredItems, replayedControls);
-    if (recoveredItems > 0 || replayedControls > 0) {
-      nextDatabase.appendEvent('app.recovery.completed', { recoveredItems, replayedControls, automatic: true });
+    if (recoveredItems > 0 || replayedControls > 0 || recoveryFailures > 0) {
+      nextDatabase.appendEvent('app.recovery.completed', {
+        recoveredItems,
+        replayedControls,
+        recoveryFailures,
+        automatic: true
+      });
     }
   } catch (error) {
     nextDatabase.close();
@@ -634,11 +657,17 @@ function registerIpcHandlers(): void {
       : null;
     const targetPath = record?.path
       ?? repository?.worktrees.find((worktree) => worktree.id === request.id)?.path;
+    if (record && orchestrator) {
+      const lifecycle = orchestrator.canRemoveWorktree(record.id);
+      if (!lifecycle.ok) return lifecycle;
+    }
     const inUse = targetPath && ptyManager?.list().some((terminal) =>
       terminal.status !== 'exited' && resolve(terminal.cwd) === resolve(targetPath)
     );
     if (inUse) return { ok: false, error: 'Stop the worktree terminal first.' };
-    return worktreeManager.remove({ ...request, repoPath: safeRepoPath });
+    const result = await worktreeManager.remove({ ...request, repoPath: safeRepoPath });
+    if (result.ok && record && orchestrator) await orchestrator.finalizeWorktreeRemoval(record.id);
+    return result;
   });
   ipcMain.handle(IPC.ideWorkspaceOpen, (_event, repoPath: unknown) => {
     if (!worktreeManager || !safetyBoundary) {
@@ -730,6 +759,36 @@ function registerIpcHandlers(): void {
     dispatchControl('run.cleaned', snapshot);
     return snapshot;
   });
+  ipcMain.handle(IPC.agentSessionsList, (_event, repoRoot: unknown) => {
+    if (!orchestrator || !safetyBoundary) throw new Error('The orchestrator is not ready.');
+    if (repoRoot !== undefined && typeof repoRoot !== 'string') throw new Error('Invalid repository path.');
+    const selected = safetyBoundary.assertProjectPath(
+      repoRoot ?? workspaceConfig.projectPath,
+      'agent-session.list'
+    );
+    return orchestrator.listAgentSessions(selected);
+  });
+  ipcMain.handle(IPC.agentSessionInputSubmit, async (_event, request: AgentSessionInputRequest) => {
+    if (!orchestrator || !safetyBoundary || !request || typeof request !== 'object') {
+      throw new Error('Invalid agent follow-up.');
+    }
+    safetyBoundary.assertAgentSession(request.sessionId, 'agent-session.input.submit');
+    return orchestrator.submitAgentSessionInput(request);
+  });
+  ipcMain.handle(IPC.agentSessionRestart, async (_event, request: AgentSessionRequest) => {
+    if (!orchestrator || !safetyBoundary || !request || typeof request !== 'object') {
+      throw new Error('Invalid agent restart request.');
+    }
+    safetyBoundary.assertAgentSession(request.sessionId, 'agent-session.restart');
+    return orchestrator.restartAgentSession(request);
+  });
+  ipcMain.handle(IPC.agentSessionStop, async (_event, request: AgentSessionRequest) => {
+    if (!orchestrator || !safetyBoundary || !request || typeof request !== 'object') {
+      return { ok: false, error: 'Invalid agent stop request.' };
+    }
+    safetyBoundary.assertAgentSession(request.sessionId, 'agent-session.stop');
+    return orchestrator.stopAgentSession(request);
+  });
   ipcMain.handle(IPC.activityList, (_event, request: ActivityListRequest | undefined) => {
     if (!database) throw new Error('Finish setup first.');
     if (request !== undefined && (!request || typeof request !== 'object')) {
@@ -750,7 +809,8 @@ function registerIpcHandlers(): void {
       return { ok: false, recoveredItems: 0, replayedControls: 0, missingWorktrees: 0, error: 'Finish setup first.' };
     }
     try {
-      const recoveredItems = database.recoverInterruptedOrchestrations();
+      const recoveredItems = orchestrator?.recover() ?? database.recoverInterruptedOrchestrations();
+      orchestrator?.reconcileRecoveredSessions();
       const health = hive.ensure();
       if (!health.ready) throw new Error(health.error ?? 'Unable to repair the hive.');
       hive.syncOrchestrations(database.listOrchestrations());
@@ -806,31 +866,55 @@ function registerIpcHandlers(): void {
     return terminal;
   });
   ipcMain.handle(IPC.terminalReplay, (_event, id: unknown) => {
-    if (!ptyManager || typeof id !== 'string') throw new Error('Invalid terminal id.');
+    if (!ptyManager || !safetyBoundary || typeof id !== 'string') throw new Error('Invalid terminal id.');
+    safetyBoundary.assertRendererTerminalView(
+      ptyManager.list().find((terminal) => terminal.id === id),
+      'terminal.replay'
+    );
     return ptyManager.replay(id);
   });
   ipcMain.handle(IPC.terminalWrite, (_event, id: unknown, data: unknown) => {
-    if (!ptyManager || typeof id !== 'string' || typeof data !== 'string') {
+    if (!ptyManager || !safetyBoundary || typeof id !== 'string' || typeof data !== 'string') {
       return { ok: false, error: 'Invalid terminal input.' };
     }
+    safetyBoundary.assertRendererTerminalControl(
+      ptyManager.list().find((terminal) => terminal.id === id),
+      'terminal.write'
+    );
     return ptyManager.write(id, data);
   });
   ipcMain.handle(IPC.terminalResize, (_event, id: unknown, cols: unknown, rows: unknown) => {
-    if (!ptyManager || typeof id !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') {
+    if (!ptyManager || !safetyBoundary || typeof id !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') {
       return { ok: false, error: 'Invalid terminal dimensions.' };
     }
+    safetyBoundary.assertRendererTerminalView(
+      ptyManager.list().find((terminal) => terminal.id === id),
+      'terminal.resize'
+    );
     return ptyManager.resize(id, cols, rows);
   });
   ipcMain.handle(IPC.terminalInterrupt, (_event, id: unknown) => {
-    if (!ptyManager || typeof id !== 'string') return { ok: false, error: 'Invalid terminal id.' };
+    if (!ptyManager || !safetyBoundary || typeof id !== 'string') return { ok: false, error: 'Invalid terminal id.' };
+    safetyBoundary.assertRendererTerminalControl(
+      ptyManager.list().find((terminal) => terminal.id === id),
+      'terminal.interrupt'
+    );
     return ptyManager.interrupt(id);
   });
   ipcMain.handle(IPC.terminalStop, (_event, id: unknown, force: unknown) => {
-    if (!ptyManager || typeof id !== 'string') return { ok: false, error: 'Invalid terminal id.' };
+    if (!ptyManager || !safetyBoundary || typeof id !== 'string') return { ok: false, error: 'Invalid terminal id.' };
+    safetyBoundary.assertRendererTerminalControl(
+      ptyManager.list().find((terminal) => terminal.id === id),
+      'terminal.stop'
+    );
     return ptyManager.stop(id, force === true);
   });
   ipcMain.handle(IPC.terminalDismiss, (_event, id: unknown) => {
-    if (!ptyManager || typeof id !== 'string') return { ok: false, error: 'Invalid terminal id.' };
+    if (!ptyManager || !safetyBoundary || typeof id !== 'string') return { ok: false, error: 'Invalid terminal id.' };
+    safetyBoundary.assertRendererTerminalControl(
+      ptyManager.list().find((terminal) => terminal.id === id),
+      'terminal.dismiss'
+    );
     return ptyManager.dismiss(id);
   });
 }

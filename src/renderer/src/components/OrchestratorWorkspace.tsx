@@ -710,9 +710,15 @@ function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, on
               </Button>
             </Tooltip>
           )}
-          {active && (
-            <Tooltip content="Stop run">
-              <Button variant="ghost" size="icon" className="danger-icon-button" aria-label="Stop run" onClick={() => void onStop(run.id)}>
+          {(active || verificationStatus === 'running') && (
+            <Tooltip content={verificationStatus === 'running' && !active ? 'Stop verifier' : 'Stop run'}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="danger-icon-button"
+                aria-label={verificationStatus === 'running' && !active ? 'Stop verifier' : 'Stop run'}
+                onClick={() => void onStop(run.id)}
+              >
                 <Icon icon={SquareStopIcon} size={15} />
               </Button>
             </Tooltip>

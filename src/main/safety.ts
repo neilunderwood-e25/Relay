@@ -1,13 +1,16 @@
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type {
+  AgentSession,
   OrchestrationSnapshot,
   OrchestrationTask,
+  TerminalSnapshot,
   TerminalSpawnRequest,
   WorktreeRecord
 } from '../shared/contracts';
 
 interface SafetyDatabase {
+  getAgentSession(id: string): AgentSession | undefined;
   getOrchestration(id: string): OrchestrationSnapshot | undefined;
   getOrchestrationTask(id: string): OrchestrationTask | undefined;
   getWorktree(id: string): WorktreeRecord | undefined;
@@ -63,6 +66,16 @@ export class SafetyBoundary {
     return task;
   }
 
+  assertAgentSession(sessionId: unknown, operation: string): AgentSession {
+    if (typeof sessionId !== 'string' || !sessionId) {
+      return this.deny(operation, 'An agent session id is required.');
+    }
+    const session = this.database.getAgentSession(sessionId);
+    if (!session) return this.deny(operation, 'The agent session was not found.');
+    this.assertRun(session.runId, operation);
+    return session;
+  }
+
   assertWorktree(worktreeId: unknown, operation: string): WorktreeRecord | undefined {
     if (typeof worktreeId !== 'string' || !worktreeId) {
       return this.deny(operation, 'A worktree id is required.');
@@ -94,6 +107,22 @@ export class SafetyBoundary {
       return this.deny(operation, 'The terminal directory is outside the selected project worktrees.');
     }
     return { ...terminal, role: 'worker', cwd, args: undefined, outputMode: 'terminal' };
+  }
+
+  assertRendererTerminalControl(terminal: TerminalSnapshot | undefined, operation: string): TerminalSnapshot {
+    if (!terminal) return this.deny(operation, 'The terminal was not found.');
+    if (!['worker', 'orchestrator'].includes(terminal.role ?? 'worker')) {
+      return this.deny(operation, 'Internal Relay terminals cannot be controlled directly.');
+    }
+    if ((terminal.outputMode ?? 'terminal') !== 'terminal') {
+      return this.deny(operation, 'Event-stream terminals cannot be controlled directly.');
+    }
+    return terminal;
+  }
+
+  assertRendererTerminalView(terminal: TerminalSnapshot | undefined, operation: string): TerminalSnapshot {
+    if (!terminal) return this.deny(operation, 'The terminal was not found.');
+    return terminal;
   }
 
   private deny(operation: string, reason: string): never {

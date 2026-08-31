@@ -651,7 +651,7 @@ export class RelayDatabase {
             stopped_at = ?,
             updated_at = ?,
             error = COALESCE(error, 'Relay restarted while this agent session was active.')
-        WHERE status IN ('starting', 'working', 'idle')
+        WHERE status IN ('starting', 'working', 'idle', 'stopping')
       `).run(now, now).changes;
       return tasks + planningRuns + integrations + verifications + syntheses + sessions;
     });
