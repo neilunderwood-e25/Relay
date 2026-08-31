@@ -16,6 +16,9 @@ beforeAll(async () => {
     writeFile(join(fixtureRoot, 'index.html'), '<!doctype html><h1>Relay</h1>'),
     writeFile(join(fixtureRoot, 'nested', 'index.html'), '<!doctype html><h1>Nested</h1>'),
     writeFile(join(fixtureRoot, 'styles.css'), 'body { color: navy; }'),
+    writeFile(join(fixtureRoot, 'feed.xml'), '<?xml version="1.0"?><rss version="2.0"></rss>'),
+    writeFile(join(fixtureRoot, 'feed.atom'), '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>'),
+    writeFile(join(fixtureRoot, 'robots.txt'), 'User-agent: *\nDisallow:\n'),
     writeFile(join(fixtureRoot, 'asset.bin'), new Uint8Array([0, 1, 2, 255]))
   ]);
   site = await startSiteServer({ root: fixtureRoot, port: 0 });
@@ -48,6 +51,20 @@ describe('static site preview server', () => {
     expect(assetResponse.status).toBe(200);
     expect(assetResponse.headers.get('content-type')).toBe('application/octet-stream');
     expect([...new Uint8Array(await assetResponse.arrayBuffer())]).toEqual([0, 1, 2, 255]);
+  });
+
+  it('serves feed and plain-text content types', async () => {
+    const xmlResponse = await fetch(`${site.url}/feed.xml`);
+    expect(xmlResponse.status).toBe(200);
+    expect(xmlResponse.headers.get('content-type')).toBe('application/xml; charset=utf-8');
+
+    const atomResponse = await fetch(`${site.url}/feed.atom`);
+    expect(atomResponse.status).toBe(200);
+    expect(atomResponse.headers.get('content-type')).toBe('application/atom+xml; charset=utf-8');
+
+    const textResponse = await fetch(`${site.url}/robots.txt`);
+    expect(textResponse.status).toBe(200);
+    expect(textResponse.headers.get('content-type')).toBe('text/plain; charset=utf-8');
   });
 
   it('supports HEAD without returning a body', async () => {
