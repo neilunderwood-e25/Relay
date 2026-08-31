@@ -11,11 +11,10 @@ export function createAppLogger(logDirectory: string): AppLogger {
   mkdirSync(logDirectory, { recursive: true });
   const logPath = join(logDirectory, 'relay.log');
   const file = pino.destination({ dest: logPath, sync: false });
-  const streams: pino.StreamEntry[] = [{ stream: file }];
-
-  if (!process.env.CI) {
-    streams.push({ stream: process.stdout });
-  }
+  // Electron can outlive the terminal that launched it. Writing through
+  // standard output after that PTY disappears raises EIO and can terminate the
+  // main process, so the application logger must remain file-backed only.
+  file.on('error', () => undefined);
 
   return {
     logPath,
@@ -28,7 +27,7 @@ export function createAppLogger(logDirectory: string): AppLogger {
         },
         timestamp: pino.stdTimeFunctions.isoTime
       },
-      pino.multistream(streams)
+      file
     )
   };
 }
