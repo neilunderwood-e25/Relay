@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Relay — local-first desktop multi-agent coding harness</title>
+    <meta
+      name="description"
+      content="Relay is a local-first desktop multi-agent coding harness. Michael plans an objective, then Claude Code and Codex CLI workers run in isolated Git worktrees on your machine."
+    />
+    <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="assets/relay-site.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <a class="brand" href="index.html">
+          <img src="assets/logo.svg" alt="" width="30" height="30" />
+          <span>Relay</span>
+          <small>v0.1.0</small>
+        </a>
+
+        <nav class="site-nav" id="site-nav" aria-label="Primary">
+          <a href="index.html">Overview</a>
+          <a href="features.html">Features</a>
+          <a href="docs.html">Docs</a>
+        </nav>
+
+        <div class="header-tools">
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Switch theme">☀</button>
+          <button
+            class="icon-button nav-toggle"
+            type="button"
+            data-nav-toggle
+            aria-controls="site-nav"
+            aria-label="Toggle navigation"
+          >
+            ☰
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- hero -->
+      <section class="hero">
+        <div class="shell hero__grid">
+          <div>
+            <span class="pill"><i class="dot"></i> Milestones 01–17 · runs on your machine</span>
+            <h1>Many coding agents. One orchestrator. Your machine.</h1>
+            <p class="hero__value">
+              Relay is a local-first desktop multi-agent coding harness: give it an objective, and
+              <b>Michael</b> — the default orchestrator — plans bounded work for Claude Code and Codex CLI
+              workers that run in isolated Git worktrees on a single coding project.
+            </p>
+            <div class="button-row">
+              <a class="button button--primary" href="docs.html">Read the docs &rarr;</a>
+              <a class="button button--ghost" href="#capabilities">See what's inside</a>
+            </div>
+            <div class="hero__meta">
+              <span><b>Electron desktop app</b> · macOS local build</span>
+              <span><b>Node.js 22+</b>, npm, Git</span>
+              <span><b>Claude Code</b> and/or <b>Codex CLI</b> on <code>PATH</code></span>
+            </div>
+          </div>
+
+          <div class="board" aria-hidden="true">
+            <div class="board__bar">
+              <i></i><i></i><i></i>
+              <span>Relay — task board</span>
+            </div>
+            <div class="board__body">
+              <div class="board__row">
+                <div>
+                  <strong>Michael · orchestrator</strong>
+                  <small>hive/agents/orchestrator</small>
+                </div>
+                <span class="tag tag--plan">planning</span>
+              </div>
+              <div class="board__row">
+                <div>
+                  <strong>Implement parser changes</strong>
+                  <small>claude · .relay/worktrees/orchestrator-1</small>
+                </div>
+                <span class="tag tag--run">running</span>
+              </div>
+              <div class="board__row">
+                <div>
+                  <strong>Independent review</strong>
+                  <small>codex · .relay/worktrees/orchestrator-2</small>
+                </div>
+                <span class="tag tag--run">running</span>
+              </div>
+              <div class="board__row">
+                <div>
+                  <strong>Review &amp; integrate</strong>
+                  <small>bounded per-file diff · squash per task</small>
+                </div>
+                <span class="tag tag--wait">awaiting you</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- how it works -->
+      <section class="section section--tight" id="how-it-works">
+        <div class="shell">
+          <div class="section-head reveal">
+            <span class="eyebrow">How it works</span>
+            <h2>Objective in, reviewable commits out</h2>
+            <p>
+              Four steps, all persisted. Nothing touches your checked-out branch until you accept the
+              work yourself.
+            </p>
+          </div>
+
+          <div class="grid grid--4">
+            <article class="card card--step reveal">
+              <span class="card__step-no">1</span>
+              <h3>Objective in</h3>
+              <p>
+                You write one objective and pick a run mode — build, split, or audit. It is persisted
+                before delivery, then handed to Michael's shared session.
+              </p>
+            </article>
+            <article class="card card--step reveal">
+              <span class="card__step-no">2</span>
+              <h3>Michael plans</h3>
+              <p>
+                Michael inspects the objective in read-only plan mode and returns a validated one-to-four
+                task plan with roles, deliverables, and provider assignments. Bad output falls back to a
+                deterministic plan.
+              </p>
+            </article>
+            <article class="card card--step reveal">
+              <span class="card__step-no">3</span>
+              <h3>Workers run isolated</h3>
+              <p>
+                Each task gets its own <code>relay/orchestrator-*</code> branch and managed worktree under
+                <code>.relay/worktrees/</code>. Claude and Codex work concurrently, never in your main
+                checkout.
+              </p>
+            </article>
+            <article class="card card--step reveal">
+              <span class="card__step-no">4</span>
+              <h3>Review &amp; integrate</h3>
+              <p>
+                Inspect a bounded per-file diff, accept or reject every task, then squash accepted work
+                onto your base branch — followed by verification and cleanup.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- capabilities -->
+      <section class="section" id="capabilities">
+        <div class="shell">
+          <div class="section-head reveal">
+            <span class="eyebrow">Architecture</span>
+            <h2>What's actually in the harness</h2>
+            <p>
+              The Electron main process owns every privileged operation. The React renderer has no direct
+              Node access and reaches the system only through narrow typed IPC contracts.
+            </p>
+          </div>
+
+          <div class="grid grid--3">
+            <div class="cap reveal">
+              <h3>Provider adapter registry</h3>
+              <p>One contract for discovery, worker launch, and read-only verification across Claude Code and Codex.</p>
+            </div>
+            <div class="cap reveal">
+              <h3>SQLite persistence</h3>
+              <p>Runs, tasks, reviews, verification reports, and an append-only event ledger survive restarts.</p>
+            </div>
+            <div class="cap reveal">
+              <h3>Agent profiles &amp; team templates</h3>
+              <p>Reusable named agents with provider, model, and instructions; templates save an objective, mode, and roster.</p>
+            </div>
+            <div class="cap reveal">
+              <h3>Durable control protocol</h3>
+              <p>Bidirectional inbox/outbox files with allowlisted actions, durable receipts, and replay after a crash.</p>
+            </div>
+            <div class="cap reveal">
+              <h3>Git worktree manager</h3>
+              <p>Validated names, project-local managed worktrees, and removal that refuses dirty or ahead branches.</p>
+            </div>
+            <div class="cap reveal">
+              <h3>Planner + concurrent scheduler</h3>
+              <p>Model-produced bounded plans, deterministic fallback, bounded concurrency, stop, and per-task retry.</p>
+            </div>
+            <div class="cap reveal">
+              <h3>Hive messages &amp; blocker routing</h3>
+              <p>A worker's <code>RELAY_BLOCKER</code> report becomes a blocked task plus a durable message in Michael's inbox.</p>
+            </div>
+            <div class="cap reveal">
+              <h3>Structured logs</h3>
+              <p>Run, Git, terminal, and system events are filterable in Activity and readable outside the UI.</p>
+            </div>
+            <div class="cap reveal">
+              <h3>node-pty supervisor</h3>
+              <p>Real interactive terminals with bounded replay buffers, watchdog timeouts, and forced shutdown.</p>
+            </div>
+          </div>
+
+          <div class="button-row reveal">
+            <a class="button button--ghost" href="features.html">Go deeper on each subsystem &rarr;</a>
+          </div>
+        </div>
+      </section>
+
+      <!-- local first -->
+      <section class="section" id="local-first">
+        <div class="shell">
+          <div class="panel panel--split reveal">
+            <div>
+              <span class="eyebrow">Local-first</span>
+              <h2>Your machine, your keys</h2>
+              <p class="lede">
+                Relay is a desktop harness, not a hosted service. It drives the CLI clients you already
+                installed and authenticated, against a Git project you already have on disk.
+              </p>
+              <p>
+                There is no Relay account, no Relay backend, and no telemetry endpoint in the app. Provider
+                authentication stays wherever Claude Code and Codex CLI already keep it.
+              </p>
+            </div>
+            <div>
+              <ul class="check">
+                <li><b>Nothing leaves your box</b> except the requests your own provider CLIs make.</li>
+                <li><b>State lives in a folder you pick.</b> A Harness Home holds <code>relay.db</code> and the hive workspace.</li>
+                <li><b>Scoped by project.</b> The main process authorizes every repository, worktree, run, task, and terminal request against the selected project.</li>
+                <li><b>Bounded environment.</b> CLI child processes get a small allowlist for auth and terminal basics instead of every host secret.</li>
+                <li><b>Your Git stays yours.</b> Relay excludes its worktrees via <code>.git/info/exclude</code> and never edits your tracked <code>.gitignore</code>.</li>
+                <li><b>Denials are auditable.</b> Every refused boundary request is recorded as an <code>app.safety.denied</code> event.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- status -->
+      <section class="section section--tight">
+        <div class="shell">
+          <div class="cta reveal">
+            <h2>Build it and run it locally</h2>
+            <p>
+              Relay is developed and verified as a local build. macOS signing, notarization, and public
+              distribution are intentionally deferred — there is no downloadable release.
+            </p>
+            <div class="button-row">
+              <a class="button button--primary" href="docs.html">Getting started &rarr;</a>
+              <a class="button button--ghost" href="docs.html#release-boundary">Release boundary</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell site-footer__inner">
+        <span>Relay <code>0.1.0</code> · a desktop multi-agent coding harness orchestrated by Michael.</span>
+        <nav aria-label="Footer">
+          <a href="index.html">Overview</a>
+          <a href="features.html">Features</a>
+          <a href="docs.html">Docs</a>
+          <a href="docs.html#release-boundary">Release status</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script src="assets/relay-site.js"></script>
+  </body>
+</html>

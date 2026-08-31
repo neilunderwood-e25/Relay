@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Features — Relay</title>
+    <meta
+      name="description"
+      content="Relay's orchestration lifecycle, isolated Git worktrees, Claude and Codex provider adapters, safety boundaries, persistence and recovery, agent profiles and team templates."
+    />
+    <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="assets/relay-site.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <a class="brand" href="index.html">
+          <img src="assets/logo.svg" alt="" width="30" height="30" />
+          <span>Relay</span>
+          <small>v0.1.0</small>
+        </a>
+
+        <nav class="site-nav" id="site-nav" aria-label="Primary">
+          <a href="index.html">Overview</a>
+          <a href="features.html">Features</a>
+          <a href="docs.html">Docs</a>
+        </nav>
+
+        <div class="header-tools">
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Switch theme">☀</button>
+          <button
+            class="icon-button nav-toggle"
+            type="button"
+            data-nav-toggle
+            aria-controls="site-nav"
+            aria-label="Toggle navigation"
+          >
+            ☰
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="page-head">
+        <div class="shell">
+          <span class="eyebrow">Features</span>
+          <h1>Six subsystems that make multi-agent work reviewable</h1>
+          <p>
+            Relay's value is not "more agents" — it is that every plan, worker, diff, decision, and failure
+            is bounded, persisted, and scoped to one project on one machine.
+          </p>
+        </div>
+      </section>
+
+      <section class="section section--tight">
+        <div class="shell">
+          <!-- 1 -->
+          <article class="feature-block reveal" id="orchestration">
+            <div class="feature-block__head">
+              <span class="eyebrow">01 · Orchestration</span>
+              <h2>Intelligent orchestration lifecycle</h2>
+              <p>
+                Every run starts in a persisted planning state and ends with one compact synthesized outcome.
+                Michael uses the Claude or Codex model you selected at startup.
+              </p>
+            </div>
+            <div>
+              <ul class="check">
+                <li><b>Three run modes.</b> Build assigns an implementation owner plus an independent reviewer; Split turns newline or semicolon-separated instructions into parallel workstreams; Audit asks each worker for an independent, evidence-backed investigation.</li>
+                <li><b>Read-only planning.</b> Planning runs in Claude plan mode or the Codex read-only sandbox and cannot modify the repository.</li>
+                <li><b>Validated plans.</b> Michael returns a one-to-four task JSON plan; Relay validates every title, role, deliverable, provider, and profile assignment before creating worktrees.</li>
+                <li><b>Never stranded.</b> Invalid output, a missing planner, or a non-zero planner exit produces a deterministic fallback plan instead of a dead run.</li>
+                <li><b>Re-plan with history.</b> Failed, blocked, or stopped runs expose an explicit Re-plan that links to the parent run and forwards prior blocker evidence, without mutating historical results.</li>
+                <li><b>Blocker routing.</b> A worker can emit a bounded <code>RELAY_BLOCKER</code> report, which becomes a blocked task plus a durable message in Michael's hive inbox and the <code>messages.jsonl</code> stream.</li>
+                <li><b>Synthesis.</b> After workers finish, Michael runs in a read-only synthesis terminal; a deterministic summary is retained if the model is unavailable or malformed.</li>
+              </ul>
+            </div>
+          </article>
+
+          <!-- 2 -->
+          <article class="feature-block reveal" id="worktrees">
+            <div class="feature-block__head">
+              <span class="eyebrow">02 · Isolation</span>
+              <h2>Isolated Git worktrees</h2>
+              <p>
+                Concurrent agents need concurrent checkouts. Every task gets its own branch and directory, and
+                your working tree stays untouched until integration.
+              </p>
+            </div>
+            <div>
+              <ul class="check">
+                <li><b>Project-local storage.</b> Managed worktrees live under <code>&lt;project&gt;/.relay/worktrees/</code>, matching the workflow Claude Code already uses.</li>
+                <li><b>Clean ignore handling.</b> Relay adds <code>/.relay/worktrees/</code> to the repository's local <code>.git/info/exclude</code> and leaves the tracked <code>.gitignore</code> alone.</li>
+                <li><b>Validated before Git.</b> Worktree and branch names are checked first — a name such as <code>../escape</code> is rejected before Git ever sees it.</li>
+                <li><b>Safe removal.</b> Removal refuses dirty worktrees, branches with commits ahead of their base, and any worktree a live terminal is using.</li>
+                <li><b>Recovery-friendly.</b> Removing a worktree leaves its Git branch intact; missing worktrees stay visible and can be forgotten without touching repository content.</li>
+                <li><b>Bounded Git.</b> Relay's Git commands run without a shell, use argument arrays, disable repository hooks and terminal prompts, and have bounded output and execution time.</li>
+              </ul>
+              <div class="code">
+                <div class="code__head">
+                  <span>project layout during a run</span>
+                  <button class="copy-button" type="button">copy</button>
+                </div>
+                <pre><code>my-project/
+  .git/
+  .relay/worktrees/
+    orchestrator-2e59e8-1-claude/   # relay/orchestrator-…-1-claude
+    orchestrator-2e59e8-2-codex/    # relay/orchestrator-…-2-codex
+  src/                              # your checkout, unchanged</code></pre>
+              </div>
+            </div>
+          </article>
+
+          <!-- 3 -->
+          <article class="feature-block reveal" id="providers">
+            <div class="feature-block__head">
+              <span class="eyebrow">03 · Providers</span>
+              <h2>Provider adapters: Claude Code + Codex CLI</h2>
+              <p>
+                Both CLIs sit behind one adapter contract covering discovery, worker launch, and read-only
+                verification — so a run can mix them freely.
+              </p>
+            </div>
+            <div>
+              <ul class="check">
+                <li><b>Discovery.</b> Provider availability is detected on <code>PATH</code>, cached for ten seconds, and concurrent checks are de-duplicated to keep startup bounded.</li>
+                <li><b>Claude workers.</b> Run in non-interactive edit-accepting mode inside their own worktree.</li>
+                <li><b>Codex workers.</b> Run in a workspace-write sandbox with approvals disabled inside their own isolated checkout.</li>
+                <li><b>Orchestrator restraint.</b> Michael's persistent CLI runs from the hive, not your checkout: Claude starts in restricted safe mode with file tools confined to the hive; Codex uses a workspace-write sandbox rooted in the hive.</li>
+                <li><b>Real terminals.</b> node-pty sessions with xterm.js give live output, serialized input, bounded dimensions, and replay across tab switches and renderer reloads.</li>
+                <li><b>No command injection.</b> Provider commands are fixed and resolved without a shell; model identifiers pass as bounded argument values, and renderer requests cannot inject CLI arguments.</li>
+                <li><b>Legible failures.</b> Authentication, filesystem permission, usage-limit, network, and generic command failures are translated into distinct actionable errors.</li>
+              </ul>
+            </div>
+          </article>
+
+          <!-- 4 -->
+          <article class="feature-block reveal" id="safety">
+            <div class="feature-block__head">
+              <span class="eyebrow">04 · Safety</span>
+              <h2>Safety boundaries</h2>
+              <p>
+                The renderer is a UI, not a privileged client. Filesystem, database, Git, PTY, and provider
+                operations stay in the Electron main process behind typed IPC.
+              </p>
+            </div>
+            <div>
+              <ul class="check">
+                <li><b>Project scoping.</b> Every repository, worktree, run, task, and terminal request is authorized against the currently selected project.</li>
+                <li><b>What the renderer cannot do.</b> Inspect another repository, operate on historical runs from another project, assume an internal terminal role, choose an arbitrary terminal directory, or inject provider CLI arguments.</li>
+                <li><b>Audited denials.</b> Every denied boundary request is recorded as an <code>app.safety.denied</code> system event.</li>
+                <li><b>Path integrity.</b> Relay refuses symlinked hive control directories and managed worktree storage that resolves outside the selected project.</li>
+                <li><b>Terminal placement.</b> Worker terminals may start only in the selected checkout or a live Git-registered worktree.</li>
+                <li><b>Bounded runtime.</b> Watchdog timeouts on planner, worker, synthesis, and verification phases; at most 12 live PTYs and 64 retained sessions; 1 MiB of retained output per session.</li>
+                <li><b>Electron hardening.</b> Renderer permission requests are denied, unexpected top-level navigation is blocked, HTTPS links open externally, and a restrictive Content Security Policy applies.</li>
+                <li><b>Allowlisted actions.</b> Michael can request a Monitor action, but Relay accepts only the documented version-1 allowlist and validates every identifier, provider, strategy, decision, and concurrency value in the main process.</li>
+              </ul>
+            </div>
+          </article>
+
+          <!-- 5 -->
+          <article class="feature-block reveal" id="persistence">
+            <div class="feature-block__head">
+              <span class="eyebrow">05 · Durability</span>
+              <h2>Persistence &amp; recovery</h2>
+              <p>
+                Crashes and quits are normal events, not data loss. Runs, reviews, memory, and pending
+                commands are all designed to be replayed exactly once.
+              </p>
+            </div>
+            <div>
+              <ul class="check">
+                <li><b>SQLite state.</b> Run and task state persists in SQLite; interrupted work is surfaced as blocked after restart rather than silently resumed.</li>
+                <li><b>Curated memory.</b> <code>memory.md</code> is Michael's long-term memory and Relay never replaces it; identity files are refreshed by the harness.</li>
+                <li><b>Deduplicated journal.</b> Human inputs, final run states, action outcomes, and recovery events append to <code>history.jsonl</code>; the latest 30 entries project into <code>context.md</code>, which every fresh session reads.</li>
+                <li><b>Exactly-once controls.</b> Control commands are immutable in <code>control/inbox/</code>; anything without an acknowledgment in <code>control/.done/</code> is replayed after restart, without replacing its audit files.</li>
+                <li><b>Durable action boundary.</b> Each accepted action crosses <code>control/actions/</code> before state mutates. Completed receipts are reused; an action left <code>executing</code> by a crash is quarantined and reported instead of run twice.</li>
+                <li><b>Non-destructive recovery.</b> Automatic and manual recovery retain interrupted runs as blocked, refresh hive projections, drain recoverable actions, and preserve every worktree and branch.</li>
+                <li><b>Integration you control.</b> Bounded per-file diffs change no Git state; every task must be explicitly accepted or rejected; accepted tasks are squashed onto the checked-out base in task order; integration refuses a dirty checkout or the wrong branch, and conflicts are reported by file and aborted cleanly.</li>
+              </ul>
+            </div>
+          </article>
+
+          <!-- 6 -->
+          <article class="feature-block reveal" id="profiles">
+            <div class="feature-block__head">
+              <span class="eyebrow">06 · Reuse</span>
+              <h2>Agent profiles &amp; team templates</h2>
+              <p>
+                Stop re-describing your crew. Save the agents that work, save the team that ships, and load
+                either before a run.
+              </p>
+            </div>
+            <div>
+              <ul class="check">
+                <li><b>Profiles.</b> A reusable agent stores a person name, animated DiceBear avatar seed, CLI provider, optional model, instructions, and enabled state.</li>
+                <li><b>Same CLI, many specialists.</b> Multiple profiles may use one provider, so specialized workers run concurrently in separate worktrees.</li>
+                <li><b>Templates.</b> A team template saves an objective, run mode, concurrency, and up to four agent profiles.</li>
+                <li><b>One command surface.</b> Load a template or hand-pick saved agents before starting a run; the planner receives the eligible roster.</li>
+                <li><b>Persistent defaults.</b> Run mode, agent concurrency, and preferred verifier persist inside the selected Harness Home.</li>
+                <li><b>Data stays data.</b> Custom fields never become executable commands — provider commands remain fixed and model identifiers are bounded arguments passed without a shell.</li>
+                <li><b>Renaming is cheap.</b> The orchestrator does not have to be called Michael; renaming updates identity and registry without moving its stable folder.</li>
+              </ul>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section section--tight">
+        <div class="shell">
+          <div class="cta reveal">
+            <h2>See how to run it</h2>
+            <p>
+              Prerequisites, install, verification commands, the unsigned macOS package, and the exact
+              boundary of what is and isn't released yet.
+            </p>
+            <div class="button-row">
+              <a class="button button--primary" href="docs.html">Open the docs &rarr;</a>
+              <a class="button button--ghost" href="index.html#how-it-works">Back to how it works</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell site-footer__inner">
+        <span>Relay <code>0.1.0</code> · a desktop multi-agent coding harness orchestrated by Michael.</span>
+        <nav aria-label="Footer">
+          <a href="index.html">Overview</a>
+          <a href="features.html">Features</a>
+          <a href="docs.html">Docs</a>
+          <a href="docs.html#release-boundary">Release status</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script src="assets/relay-site.js"></script>
+  </body>
+</html>
