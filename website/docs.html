@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Docs — Relay</title>
+    <meta
+      name="description"
+      content="Relay documentation: prerequisites, npm install and npm run dev, verification commands, first-run walkthrough, workspace layout, architecture, unsigned macOS packaging, and the deferred release boundary."
+    />
+    <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="assets/relay-site.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <a class="brand" href="index.html">
+          <img src="assets/logo.svg" alt="" width="30" height="30" />
+          <span>Relay</span>
+          <small>v0.1.0</small>
+        </a>
+
+        <nav class="site-nav" id="site-nav" aria-label="Primary">
+          <a href="index.html">Overview</a>
+          <a href="features.html">Features</a>
+          <a href="docs.html">Docs</a>
+        </nav>
+
+        <div class="header-tools">
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Switch theme">☀</button>
+          <button
+            class="icon-button nav-toggle"
+            type="button"
+            data-nav-toggle
+            aria-controls="site-nav"
+            aria-label="Toggle navigation"
+          >
+            ☰
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="page-head">
+        <div class="shell">
+          <span class="eyebrow">Docs</span>
+          <h1>Run Relay from source</h1>
+          <p>
+            Relay is a local Electron app you build yourself. This page covers prerequisites, the dev loop,
+            the verification gates, the workspace it creates, and the release work that is deliberately still
+            open.
+          </p>
+        </div>
+      </section>
+
+      <div class="shell docs">
+        <aside class="toc" aria-label="On this page">
+          <h2>On this page</h2>
+          <ol>
+            <li><a href="#getting-started">Getting started</a></li>
+            <li><a href="#verification">Verification</a></li>
+            <li><a href="#first-run">Your first run</a></li>
+            <li><a href="#workspace">Workspace layout</a></li>
+            <li><a href="#architecture">Architecture</a></li>
+            <li><a href="#packaging">macOS packaging</a></li>
+            <li><a href="#release-boundary">Release boundary</a></li>
+          </ol>
+        </aside>
+
+        <div>
+          <!-- getting started -->
+          <section class="doc-section" id="getting-started">
+            <h2>Getting started</h2>
+
+            <h3>Prerequisites</h3>
+            <ul>
+              <li><b>Node.js 22 or newer</b></li>
+              <li><b>npm</b></li>
+              <li><b>Git</b></li>
+              <li><b>Claude Code and/or Codex CLI on <code>PATH</code></b>, already installed and authenticated</li>
+            </ul>
+            <p>
+              Relay drives whichever provider CLIs it can find. One is enough to start; both are needed for
+              the real-CLI tests and for mixed Claude + Codex runs.
+            </p>
+
+            <h3>Install and start</h3>
+            <div class="code">
+              <div class="code__head">
+                <span>bash</span>
+                <button class="copy-button" type="button">copy</button>
+              </div>
+              <pre><code>npm install
+npm run dev</code></pre>
+            </div>
+            <p>
+              <code>npm install</code> also runs <code>electron-builder install-app-deps</code>, which rebuilds
+              the native <code>better-sqlite3</code> and <code>node-pty</code> modules for your Electron
+              version. <code>npm run dev</code> starts the app through <code>electron-vite</code>.
+            </p>
+
+            <h3>Startup wizard</h3>
+            <p>On first launch no project is selected. The startup dialog asks for two paths:</p>
+            <ul>
+              <li><b>Harness Home</b> — where Relay keeps <code>relay.db</code> and its coordination state. It is created if needed and must be readable and writable.</li>
+              <li><b>Git project</b> — the single coding project. It must be a Git worktree on a checked-out local branch.</li>
+            </ul>
+            <p>
+              The two folders cannot contain one another, selected paths are canonicalized, and Michael's
+              provider and model are re-verified at every startup. Missing CLIs and invalid paths produce
+              visible, actionable errors instead of a broken session.
+            </p>
+            <div class="note">
+              <p>
+                <strong>Use a disposable project first.</strong> Relay creates branches and worktrees inside the
+                project you select. Start on a clean local branch with at least one commit.
+              </p>
+            </div>
+          </section>
+
+          <!-- verification -->
+          <section class="doc-section" id="verification">
+            <h2>Verification</h2>
+            <p>The everyday gates before you trust a change:</p>
+            <div class="code">
+              <div class="code__head">
+                <span>bash</span>
+                <button class="copy-button" type="button">copy</button>
+              </div>
+              <pre><code>npm run typecheck
+npm test
+npm run build</code></pre>
+            </div>
+
+            <h3>All scripts</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Command</th>
+                    <th scope="col">What it does</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>npm run dev</code></td>
+                    <td>Start the app in development mode via electron-vite.</td>
+                  </tr>
+                  <tr>
+                    <td><code>npm run build</code></td>
+                    <td>Production main, preload, and renderer build. The final verification gate for renderer work.</td>
+                  </tr>
+                  <tr>
+                    <td><code>npm run typecheck</code></td>
+                    <td>TypeScript, no emit, across both the Node and web projects.</td>
+                  </tr>
+                  <tr>
+                    <td><code>npm test</code></td>
+                    <td>The full Vitest suite, including design-system invariants and release checks.</td>
+                  </tr>
+                  <tr>
+                    <td><code>npm run test:cli</code></td>
+                    <td>Opt-in real-CLI worktree smoke test. Launches your installed, authenticated Claude Code and Codex CLI clients in disposable repositories.</td>
+                  </tr>
+                  <tr>
+                    <td><code>npm run test:e2e</code></td>
+                    <td>The repeatable local gate: typecheck, full suite, production build, then both real-CLI smoke tests.</td>
+                  </tr>
+                  <tr>
+                    <td><code>npm run pack:mac:unsigned</code></td>
+                    <td>Build an unsigned macOS <code>.app</code> bundle in <code>dist/</code>.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p>
+              <code>npm run test:cli</code> is opt-in on purpose: it invokes real CLI binaries. It uses
+              disposable repositories and isolated worktrees, confirms read-only planning does not change the
+              project, confirms worker changes stay inside their worktree, and creates no commits.
+            </p>
+            <p>
+              Packaged-app acceptance stays a separate human-style pass, because it exercises native dialogs,
+              window state, and visual terminal behavior. That script lives in
+              <code>FULL_E2E_CHECKLIST.md</code>, and the gate list plus deferred distribution work lives in
+              <code>RELEASE_CHECKLIST.md</code>.
+            </p>
+          </section>
+
+          <!-- first run -->
+          <section class="doc-section" id="first-run">
+            <h2>Your first run</h2>
+            <ol>
+              <li><b>Write one objective</b> and choose a run mode — Build, Split, or Audit. Split accepts newline or semicolon-separated instructions as parallel workstreams.</li>
+              <li><b>Pick your crew.</b> Load a saved team template, or select individual saved agent profiles. Set agent concurrency.</li>
+              <li><b>Let Michael plan.</b> The run opens in a persisted planning state; planning is read-only and cannot modify the repository. Michael returns a one-to-four task plan; a deterministic fallback is used if the model output is unusable.</li>
+              <li><b>Watch the workers.</b> Each task gets a <code>relay/orchestrator-*</code> branch and a managed worktree. Open Console for live Claude and Codex output. Your main checkout stays unchanged.</li>
+              <li><b>Handle blockers.</b> A worker that emits <code>RELAY_BLOCKER</code> becomes a blocked task plus a durable message for Michael. Failed, blocked, or stopped runs can be re-planned with the prior evidence attached.</li>
+              <li><b>Review every task.</b> Inspect the bounded per-file diff, then accept or reject. Integration stays disabled until all tasks are reviewed.</li>
+              <li><b>Integrate.</b> Accepted tasks are squashed onto the checked-out base branch in task order. Integration refuses a dirty checkout or the wrong branch; conflicts are reported by file and aborted cleanly.</li>
+              <li><b>Verify, then clean up.</b> Final verification runs through an available CLI in read-only mode and its report is retained. Cleanup only removes completed managed worktrees after verification — task branches remain for recovery.</li>
+            </ol>
+            <p>
+              Everything above is persisted. If the app restarts mid-run, interrupted work is surfaced as
+              blocked, hive projections are repaired, pending controls are replayed once, and no branch or
+              worktree is deleted.
+            </p>
+          </section>
+
+          <!-- workspace -->
+          <section class="doc-section" id="workspace">
+            <h2>Workspace layout</h2>
+            <p>
+              Relay stores its database and coordination state in the Harness Home you selected. The task
+              ledger and message stream are plain files, readable without the UI.
+            </p>
+            <pre class="tree">Harness Home/
+  relay.db
+  hive/
+    PROTOCOL.md
+    registry.json
+    board.md
+    tasks.json
+    log.jsonl
+    messages.jsonl
+    control/
+      inbox/
+      outbox/.processing/
+      outbox/.done/
+      results/
+      actions/
+    agents/orchestrator/
+      identity.md
+      memory.md
+      context.md
+      history.jsonl
+      cursor.json
+      inbox/.done/
+      outbox/.sent/</pre>
+            <p>
+              Michael's identity is refreshed by the harness while <code>memory.md</code> is never overwritten.
+              Renaming the orchestrator updates its identity and registry without moving its stable folder.
+              Managed worktrees are not stored here — they live inside the project under
+              <code>.relay/worktrees/</code>.
+            </p>
+          </section>
+
+          <!-- architecture -->
+          <section class="doc-section" id="architecture">
+            <h2>Architecture</h2>
+            <p>
+              The renderer has no direct Node access. Filesystem, database, Git, PTY, and provider operations
+              stay in the Electron main process and are exposed through narrow typed IPC contracts.
+            </p>
+            <pre class="tree">Electron main process
+  ├── provider adapter registry + discovery
+  ├── SQLite persistence
+  ├── agent profile + team template registry
+  ├── persistent orchestrator hive workspace
+  ├── durable bidirectional control protocol
+  ├── validated Michael action bridge
+  ├── bounded live Monitor projection
+  ├── Git repository + worktree manager
+  ├── orchestrator planner + concurrent scheduler
+  ├── read-only model planner + validated JSON plans
+  ├── durable hive messages + blocker routing
+  ├── read-only final outcome synthesis
+  ├── structured logs
+  ├── node-pty process supervisor
+  ├── bounded terminal replay buffers
+  └── typed IPC handlers
+          │
+          ▼
+isolated preload contextBridge
+          │
+          ▼
+React renderer
+  ├── orchestrator command + live task board
+  ├── reusable agent + template library
+  ├── xterm.js terminal workspace
+  ├── worktree creation + status screen
+  ├── activity ledger + runtime health
+  ├── persistent run defaults + recovery
+  └── Zustand terminal state</pre>
+            <p>
+              Read the subsystem detail on the <a href="features.html">features page</a>.
+            </p>
+          </section>
+
+          <!-- packaging -->
+          <section class="doc-section" id="packaging">
+            <h2>macOS packaging</h2>
+            <p>Build an unsigned application bundle, or unsigned DMG and ZIP artifacts:</p>
+            <div class="code">
+              <div class="code__head">
+                <span>bash</span>
+                <button class="copy-button" type="button">copy</button>
+              </div>
+              <pre><code>npm run pack:mac:unsigned
+npm run dist:mac:unsigned</code></pre>
+            </div>
+            <p>Expected Apple Silicon artifacts:</p>
+            <pre class="tree">dist/mac-arm64/Relay.app
+dist/Relay-0.1.0-arm64.dmg
+dist/Relay-0.1.0-arm64.zip</pre>
+            <p>
+              The package uses ASAR and carries only production dependencies plus the Darwin native modules
+              the bundle needs. The bundle icon source is <code>build/relay-app-icon.svg</code>; development
+              mode uses the PNG for the live Dock icon.
+            </p>
+            <p>
+              The macOS application does not need Accessibility or Screen Recording permission. Those are only
+              required by external UI-automation tools used to inspect the app.
+            </p>
+          </section>
+
+          <!-- release boundary -->
+          <section class="doc-section" id="release-boundary">
+            <h2>Release boundary</h2>
+            <div class="note">
+              <p>
+                <strong>There is no downloadable Relay release.</strong> macOS signing, notarization, hardened
+                runtime, and public distribution are intentionally deferred. Version <code>0.1.0</code> is
+                validated as a local, unsigned build that you compile from source yourself.
+              </p>
+            </div>
+            <p>
+              An unsigned bundle has no signing identity, hardened runtime, notarization ticket, or Gatekeeper
+              assessment. Another Mac may warn about it or refuse to open it until signed release work is done.
+            </p>
+            <h3>Deferred distribution work</h3>
+            <ul>
+              <li>Apple Developer ID certificate and secure CI secret handling</li>
+              <li>Hardened runtime and entitlements</li>
+              <li>Notarization and stapling</li>
+              <li>Gatekeeper verification on a clean macOS machine</li>
+              <li>Update channel, release publishing, and rollback policy</li>
+            </ul>
+            <h3>What <em>is</em> validated</h3>
+            <ul>
+              <li>Onboarding persistence, permission policy, and package configuration checks in the automated suite</li>
+              <li>Watchdogs, bounded buffers, workspace validation, and both provider adapters</li>
+              <li>The repeatable local <code>npm run test:e2e</code> gate</li>
+              <li>A human-style packaged-app acceptance pass covering startup through cleanup, restart recovery, and traversal rejection</li>
+            </ul>
+            <p>
+              The authoritative lists are <code>RELEASE_CHECKLIST.md</code> and
+              <code>FULL_E2E_CHECKLIST.md</code> in the repository.
+            </p>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell site-footer__inner">
+        <span>Relay <code>0.1.0</code> · a desktop multi-agent coding harness orchestrated by Michael.</span>
+        <nav aria-label="Footer">
+          <a href="index.html">Overview</a>
+          <a href="features.html">Features</a>
+          <a href="docs.html">Docs</a>
+          <a href="docs.html#release-boundary">Release status</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script src="assets/relay-site.js"></script>
+  </body>
+</html>
