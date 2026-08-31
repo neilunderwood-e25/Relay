@@ -433,6 +433,36 @@ export type VerificationStatus = 'idle' | 'running' | 'passed' | 'failed';
 export type PlanningSource = 'model' | 'fallback';
 export type SynthesisStatus = 'idle' | 'running' | 'completed' | 'fallback';
 
+export type AgentSessionStatus = 'starting' | 'working' | 'idle' | 'stopped' | 'resumable' | 'failed';
+
+/**
+ * Durable identity for a worker conversation. The PTY is intentionally only one
+ * attachment to the session: later milestones can stop or replace that process
+ * without losing the provider conversation or its worktree association.
+ */
+export interface AgentSession {
+  id: string;
+  runId: string;
+  initialTaskId: string;
+  provider: ProviderId;
+  status: AgentSessionStatus;
+  worktreeId?: string;
+  worktreePath?: string;
+  branch?: string;
+  terminalId?: string;
+  nativeSessionId?: string;
+  profileId?: string;
+  agentName: string;
+  avatarSeed: string;
+  model?: string;
+  createdAt: number;
+  updatedAt: number;
+  startedAt?: number;
+  lastActiveAt?: number;
+  stoppedAt?: number;
+  error?: string;
+}
+
 export interface OrchestrationRun {
   id: string;
   objective: string;
@@ -487,6 +517,7 @@ export interface OrchestrationTask {
   worktreePath?: string;
   branch?: string;
   terminalId?: string;
+  agentSessionId?: string;
   summary?: string;
   error?: string;
   blocker?: string;
@@ -510,6 +541,8 @@ export interface OrchestrationTask {
 export interface OrchestrationSnapshot {
   run: OrchestrationRun;
   tasks: OrchestrationTask[];
+  /** Optional for compatibility with snapshots written before agent sessions existed. */
+  sessions?: AgentSession[];
 }
 
 export interface OrchestrationCreateRequest {

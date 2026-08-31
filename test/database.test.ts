@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import SqliteDatabase from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { RelayDatabase } from '../src/main/database';
 
@@ -25,7 +26,7 @@ describe('RelayDatabase', () => {
 
     expect(database.health()).toMatchObject({
       open: true,
-      schemaVersion: 8
+      schemaVersion: 9
     });
 
     database.close();
@@ -74,6 +75,47 @@ describe('RelayDatabase', () => {
     database.close();
 
     expect(database.health().open).toBe(false);
+  });
+
+  it('upgrades a version 8 database without losing existing run history', () => {
+    const database = temporaryDatabase();
+    database.open();
+    database.createOrchestration({
+      run: {
+        id: 'legacy-run',
+        objective: 'Preserve this run',
+        repoRoot: '/tmp/legacy-project',
+        baseBranch: 'main',
+        status: 'completed',
+        strategy: 'balanced',
+        concurrency: 1,
+        createdAt: 100,
+        updatedAt: 100
+      },
+      tasks: []
+    });
+    database.close();
+
+    const legacy = new SqliteDatabase(database.path);
+    legacy.exec(`
+      DROP INDEX idx_orchestration_tasks_session;
+      DROP INDEX idx_agent_sessions_native;
+      DROP INDEX idx_agent_sessions_terminal;
+      DROP INDEX idx_agent_sessions_run;
+      DROP TABLE agent_sessions;
+      ALTER TABLE orchestration_tasks DROP COLUMN agent_session_id;
+      PRAGMA user_version = 8;
+    `);
+    legacy.close();
+
+    database.open();
+    expect(database.health().schemaVersion).toBe(9);
+    expect(database.getOrchestration('legacy-run')).toMatchObject({
+      run: { objective: 'Preserve this run' },
+      tasks: [],
+      sessions: []
+    });
+    database.close();
   });
 
   it('persists managed worktree records', () => {
@@ -197,9 +239,28 @@ describe('RelayDatabase', () => {
         provider: 'codex',
         status: 'queued',
         attempt: 0,
+        agentSessionId: 'session-1',
         blocker: 'Waiting for an SDK.',
         createdAt: 100,
         updatedAt: 100
+      }],
+      sessions: [{
+        id: 'session-1',
+        runId: 'run-1',
+        initialTaskId: 'task-1',
+        provider: 'codex',
+        status: 'stopped',
+        worktreeId: 'worktree-1',
+        worktreePath: '/tmp/project/.relay/worktrees/task-1',
+        branch: 'relay/task-1',
+        terminalId: 'terminal-1',
+        nativeSessionId: 'codex-thread-1',
+        agentName: 'Avery',
+        avatarSeed: 'avery',
+        createdAt: 100,
+        updatedAt: 100,
+        startedAt: 100,
+        lastActiveAt: 100
       }]
     });
 
@@ -218,8 +279,19 @@ describe('RelayDatabase', () => {
     expect(snapshot?.tasks[0]).toMatchObject({
       role: 'builder',
       deliverable: 'Working feature',
+      agentSessionId: 'session-1',
       blocker: 'Waiting for an SDK.'
     });
+    expect(snapshot?.sessions).toMatchObject([{
+      id: 'session-1',
+      initialTaskId: 'task-1',
+      provider: 'codex',
+      status: 'stopped',
+      nativeSessionId: 'codex-thread-1',
+      terminalId: 'terminal-1'
+    }]);
+    expect(database.getAgentSessionByTask('task-1')?.id).toBe('session-1');
+    expect(database.getAgentSessionByTerminal('terminal-1')?.id).toBe('session-1');
     expect(snapshot?.tasks).toHaveLength(1);
     expect(database.listOrchestrations('/tmp/project')).toHaveLength(1);
     expect(database.recoverInterruptedOrchestrations()).toBe(1);
@@ -227,6 +299,61 @@ describe('RelayDatabase', () => {
       run: { status: 'blocked' },
       tasks: [{ status: 'blocked' }]
     });
+    database.close();
+  });
+
+  it('recovers active agent sessions without losing resumable identity', () => {
+    const database = temporaryDatabase();
+    database.open();
+    database.createOrchestration({
+      run: {
+        id: 'run-session-recovery',
+        objective: 'Build the feature',
+        repoRoot: '/tmp/project',
+        baseBranch: 'main',
+        status: 'running',
+        strategy: 'balanced',
+        concurrency: 1,
+        createdAt: 100,
+        updatedAt: 100
+      },
+      tasks: [{
+        id: 'task-session-recovery',
+        runId: 'run-session-recovery',
+        ordinal: 0,
+        title: 'Build',
+        instructions: 'Build it',
+        role: 'builder',
+        deliverable: 'Working feature',
+        provider: 'claude',
+        status: 'running',
+        attempt: 1,
+        agentSessionId: 'session-recovery',
+        createdAt: 100,
+        updatedAt: 100
+      }],
+      sessions: [{
+        id: 'session-recovery',
+        runId: 'run-session-recovery',
+        initialTaskId: 'task-session-recovery',
+        provider: 'claude',
+        status: 'working',
+        terminalId: 'terminal-recovery',
+        nativeSessionId: 'claude-session-uuid',
+        agentName: 'Morgan',
+        avatarSeed: 'morgan',
+        createdAt: 100,
+        updatedAt: 100
+      }]
+    });
+
+    expect(database.recoverInterruptedOrchestrations()).toBe(2);
+    expect(database.getAgentSession('session-recovery')).toMatchObject({
+      status: 'resumable',
+      nativeSessionId: 'claude-session-uuid',
+      error: 'Relay restarted while this agent session was active.'
+    });
+    expect(database.getAgentSession('session-recovery')?.terminalId).toBeUndefined();
     database.close();
   });
 });

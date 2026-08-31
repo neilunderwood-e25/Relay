@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import type {
+  AgentSession,
   AgentProfile,
   HiveCoordinationMessage,
   OperationResult,
@@ -644,9 +645,19 @@ export class Orchestrator {
       current.updatedAt = event.exitedAt;
       current.completedAt = event.exitedAt;
       this.options.database.updateOrchestrationTask(current);
+      const session = this.options.database.getAgentSessionByTask(current.id);
+      if (session) {
+        session.status = current.status === 'failed' ? 'failed' : 'stopped';
+        session.updatedAt = event.exitedAt;
+        session.lastActiveAt = event.exitedAt;
+        session.stoppedAt = event.exitedAt;
+        session.error = current.error ?? current.blocker;
+        this.options.database.upsertAgentSession(session);
+      }
       this.options.database.appendEvent('orchestration.task.finished', {
         runId: current.runId,
         taskId: current.id,
+        sessionId: session?.id,
         status: current.status,
         exitCode: event.exitCode
       });
@@ -817,6 +828,7 @@ export class Orchestrator {
   }
 
   private async startTask(run: OrchestrationRun, task: OrchestrationTask): Promise<void> {
+    let session: AgentSession | undefined;
     try {
       if (!task.worktreePath) {
         const worktree = await this.options.worktrees.create({
@@ -831,6 +843,8 @@ export class Orchestrator {
         this.options.database.updateOrchestrationTask(task);
         this.emit(run.id);
       }
+
+      session = this.prepareAgentSession(run, task);
 
       const prompt = workerPrompt(run, task, this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME);
       const terminal = await this.options.terminals.spawn({
@@ -848,12 +862,20 @@ export class Orchestrator {
       task.status = 'running';
       task.error = undefined;
       task.updatedAt = Date.now();
+      session.terminalId = terminal.id;
+      session.status = 'working';
+      session.updatedAt = task.updatedAt;
+      session.lastActiveAt = task.updatedAt;
+      session.stoppedAt = undefined;
+      session.error = undefined;
+      this.options.database.upsertAgentSession(session);
       this.options.database.updateOrchestrationTask(task);
       this.options.database.appendEvent('orchestration.task.started', {
         runId: run.id,
         taskId: task.id,
         provider: task.provider,
         terminalId: terminal.id,
+        sessionId: session.id,
         worktreeId: task.worktreeId
       });
       this.message(run.id, task.id, 'status', task.agentName ?? personNameForSeed(task.id), `Started ${task.title}.`);
@@ -866,6 +888,13 @@ export class Orchestrator {
       task.error = messageOf(error);
       task.updatedAt = Date.now();
       task.completedAt = task.updatedAt;
+      if (session) {
+        session.status = 'failed';
+        session.error = task.error;
+        session.updatedAt = task.updatedAt;
+        session.stoppedAt = task.updatedAt;
+        this.options.database.upsertAgentSession(session);
+      }
       this.options.database.updateOrchestrationTask(task);
       this.options.database.appendEvent('orchestration.task.failed', {
         runId: run.id,
@@ -1072,6 +1101,66 @@ export class Orchestrator {
   private providerReplay(provider: ProviderId | undefined, replay: TerminalReplay): TerminalReplay {
     if (!provider) return replay;
     return { ...replay, data: extractProviderResult(provider, replay.data) };
+  }
+
+  private prepareAgentSession(run: OrchestrationRun, task: OrchestrationTask): AgentSession {
+    const now = Date.now();
+    const existing = (task.agentSessionId
+      ? this.options.database.getAgentSession(task.agentSessionId)
+      : undefined) ?? this.options.database.getAgentSessionByTask(task.id);
+    const session: AgentSession = existing
+      ? {
+          ...existing,
+          provider: task.provider,
+          status: 'starting',
+          worktreeId: task.worktreeId,
+          worktreePath: task.worktreePath,
+          branch: task.branch,
+          terminalId: undefined,
+          profileId: task.profileId,
+          agentName: task.agentName ?? personNameForSeed(task.id),
+          avatarSeed: task.avatarSeed ?? task.id,
+          model: task.model,
+          updatedAt: now,
+          startedAt: existing.startedAt ?? now,
+          lastActiveAt: now,
+          stoppedAt: undefined,
+          error: undefined
+        }
+      : {
+          id: `session-${randomUUID().slice(0, 12)}`,
+          runId: run.id,
+          initialTaskId: task.id,
+          provider: task.provider,
+          status: 'starting',
+          worktreeId: task.worktreeId,
+          worktreePath: task.worktreePath,
+          branch: task.branch,
+          profileId: task.profileId,
+          agentName: task.agentName ?? personNameForSeed(task.id),
+          avatarSeed: task.avatarSeed ?? task.id,
+          model: task.model,
+          createdAt: now,
+          updatedAt: now,
+          startedAt: now,
+          lastActiveAt: now
+        };
+    this.options.database.upsertAgentSession(session);
+    if (task.agentSessionId !== session.id) {
+      task.agentSessionId = session.id;
+      task.updatedAt = now;
+      this.options.database.updateOrchestrationTask(task);
+    }
+    if (!existing) {
+      this.options.database.appendEvent('orchestration.agent_session.created', {
+        sessionId: session.id,
+        runId: run.id,
+        taskId: task.id,
+        provider: task.provider,
+        worktreeId: task.worktreeId
+      });
+    }
+    return session;
   }
 
   private emit(runId: string): void {

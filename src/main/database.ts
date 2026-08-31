@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import type {
+  AgentSession,
   AgentProfile,
   ActivityCategory,
   ActivityEvent,
@@ -208,6 +209,40 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_orchestration_runs_parent ON orchestration_runs(parent_run_id);
       CREATE INDEX idx_orchestration_runs_synthesis_terminal
         ON orchestration_runs(synthesis_terminal_id);
+    `);
+  },
+  (database) => {
+    database.exec(`
+      CREATE TABLE agent_sessions (
+        id                TEXT PRIMARY KEY,
+        run_id            TEXT NOT NULL REFERENCES orchestration_runs(id) ON DELETE CASCADE,
+        initial_task_id   TEXT NOT NULL REFERENCES orchestration_tasks(id) ON DELETE CASCADE,
+        provider          TEXT NOT NULL,
+        status            TEXT NOT NULL,
+        worktree_id       TEXT,
+        worktree_path     TEXT,
+        branch            TEXT,
+        terminal_id       TEXT,
+        native_session_id TEXT,
+        profile_id        TEXT,
+        agent_name        TEXT NOT NULL,
+        avatar_seed       TEXT NOT NULL,
+        model             TEXT,
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        started_at        INTEGER,
+        last_active_at    INTEGER,
+        stopped_at        INTEGER,
+        error             TEXT,
+        UNIQUE(initial_task_id)
+      );
+
+      ALTER TABLE orchestration_tasks ADD COLUMN agent_session_id TEXT;
+
+      CREATE INDEX idx_agent_sessions_run ON agent_sessions(run_id, created_at);
+      CREATE INDEX idx_agent_sessions_terminal ON agent_sessions(terminal_id);
+      CREATE INDEX idx_agent_sessions_native ON agent_sessions(provider, native_session_id);
+      CREATE INDEX idx_orchestration_tasks_session ON orchestration_tasks(agent_session_id);
     `);
   }
 ];
@@ -452,6 +487,7 @@ export class RelayDatabase {
     const insert = database.transaction(() => {
       this.writeRun(snapshot.run);
       for (const task of snapshot.tasks) this.writeTask(task);
+      for (const session of snapshot.sessions ?? []) this.writeAgentSession(session);
     });
     insert();
   }
@@ -463,7 +499,7 @@ export class RelayDatabase {
       : database.prepare(`${RUN_SELECT} ORDER BY created_at DESC LIMIT 50`).all()) as RunRow[];
     return rows.map((row) => {
       const run = runFromRow(row);
-      return { run, tasks: this.listOrchestrationTasks(run.id) };
+      return { run, tasks: this.listOrchestrationTasks(run.id), sessions: this.listAgentSessions(run.id) };
     });
   }
 
@@ -471,7 +507,7 @@ export class RelayDatabase {
     const row = this.requireOpen().prepare(`${RUN_SELECT} WHERE id = ?`).get(id) as RunRow | undefined;
     if (!row) return undefined;
     const run = runFromRow(row);
-    return { run, tasks: this.listOrchestrationTasks(run.id) };
+    return { run, tasks: this.listOrchestrationTasks(run.id), sessions: this.listAgentSessions(run.id) };
   }
 
   getOrchestrationTask(id: string): OrchestrationTask | undefined {
@@ -484,6 +520,36 @@ export class RelayDatabase {
       .prepare(`${TASK_SELECT} WHERE terminal_id = ?`)
       .get(terminalId) as TaskRow | undefined;
     return row ? taskFromRow(row) : undefined;
+  }
+
+  listAgentSessions(runId?: string): AgentSession[] {
+    const rows = (runId
+      ? this.requireOpen().prepare(`${AGENT_SESSION_SELECT} WHERE run_id = ? ORDER BY created_at`).all(runId)
+      : this.requireOpen().prepare(`${AGENT_SESSION_SELECT} ORDER BY created_at`).all()) as AgentSessionRow[];
+    return rows.map(agentSessionFromRow);
+  }
+
+  getAgentSession(id: string): AgentSession | undefined {
+    const row = this.requireOpen().prepare(`${AGENT_SESSION_SELECT} WHERE id = ?`).get(id) as AgentSessionRow | undefined;
+    return row ? agentSessionFromRow(row) : undefined;
+  }
+
+  getAgentSessionByTask(taskId: string): AgentSession | undefined {
+    const row = this.requireOpen()
+      .prepare(`${AGENT_SESSION_SELECT} WHERE initial_task_id = ?`)
+      .get(taskId) as AgentSessionRow | undefined;
+    return row ? agentSessionFromRow(row) : undefined;
+  }
+
+  getAgentSessionByTerminal(terminalId: string): AgentSession | undefined {
+    const row = this.requireOpen()
+      .prepare(`${AGENT_SESSION_SELECT} WHERE terminal_id = ?`)
+      .get(terminalId) as AgentSessionRow | undefined;
+    return row ? agentSessionFromRow(row) : undefined;
+  }
+
+  upsertAgentSession(session: AgentSession): void {
+    this.writeAgentSession(session);
   }
 
   getOrchestrationByVerificationTerminal(terminalId: string): OrchestrationSnapshot | undefined {
@@ -575,7 +641,19 @@ export class RelayDatabase {
             synthesis_error = 'Relay restarted during final synthesis.', updated_at = ?
         WHERE synthesis_status = 'running'
       `).run(now).changes;
-      return tasks + planningRuns + integrations + verifications + syntheses;
+      const sessions = database.prepare(`
+        UPDATE agent_sessions
+        SET status = CASE
+              WHEN native_session_id IS NOT NULL THEN 'resumable'
+              ELSE 'stopped'
+            END,
+            terminal_id = NULL,
+            stopped_at = ?,
+            updated_at = ?,
+            error = COALESCE(error, 'Relay restarted while this agent session was active.')
+        WHERE status IN ('starting', 'working', 'idle')
+      `).run(now, now).changes;
+      return tasks + planningRuns + integrations + verifications + syntheses + sessions;
     });
     return recover();
   }
@@ -646,12 +724,12 @@ export class RelayDatabase {
     this.requireOpen().prepare(`
       INSERT INTO orchestration_tasks
         (id, run_id, ordinal, title, instructions, role, deliverable, provider, status, attempt,
-         worktree_id, worktree_path, branch, terminal_id, summary, error,
+         worktree_id, worktree_path, branch, terminal_id, agent_session_id, summary, error,
          blocker,
          created_at, updated_at, started_at, completed_at, review_status, integration_status,
          integration_commit, integration_error, reviewed_at, integrated_at,
          profile_id, agent_name, avatar_seed, model, profile_instructions)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         instructions = excluded.instructions,
@@ -664,6 +742,7 @@ export class RelayDatabase {
         worktree_path = excluded.worktree_path,
         branch = excluded.branch,
         terminal_id = excluded.terminal_id,
+        agent_session_id = excluded.agent_session_id,
         summary = excluded.summary,
         error = excluded.error,
         blocker = excluded.blocker,
@@ -684,7 +763,8 @@ export class RelayDatabase {
     `).run(
       task.id, task.runId, task.ordinal, task.title, task.instructions, task.role, task.deliverable, task.provider,
       task.status, task.attempt, task.worktreeId ?? null, task.worktreePath ?? null,
-      task.branch ?? null, task.terminalId ?? null, task.summary ?? null, task.error ?? null,
+      task.branch ?? null, task.terminalId ?? null, task.agentSessionId ?? null,
+      task.summary ?? null, task.error ?? null,
       task.blocker ?? null,
       task.createdAt, task.updatedAt, task.startedAt ?? null, task.completedAt ?? null,
       task.reviewStatus ?? 'pending', task.integrationStatus ?? 'pending',
@@ -692,6 +772,40 @@ export class RelayDatabase {
       task.reviewedAt ?? null, task.integratedAt ?? null,
       task.profileId ?? null, task.agentName ?? null, task.avatarSeed ?? null, task.model ?? null,
       task.profileInstructions ?? null
+    );
+  }
+
+  private writeAgentSession(session: AgentSession): void {
+    this.requireOpen().prepare(`
+      INSERT INTO agent_sessions
+        (id, run_id, initial_task_id, provider, status, worktree_id, worktree_path, branch,
+         terminal_id, native_session_id, profile_id, agent_name, avatar_seed, model,
+         created_at, updated_at, started_at, last_active_at, stopped_at, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        provider = excluded.provider,
+        status = excluded.status,
+        worktree_id = excluded.worktree_id,
+        worktree_path = excluded.worktree_path,
+        branch = excluded.branch,
+        terminal_id = excluded.terminal_id,
+        native_session_id = excluded.native_session_id,
+        profile_id = excluded.profile_id,
+        agent_name = excluded.agent_name,
+        avatar_seed = excluded.avatar_seed,
+        model = excluded.model,
+        updated_at = excluded.updated_at,
+        started_at = excluded.started_at,
+        last_active_at = excluded.last_active_at,
+        stopped_at = excluded.stopped_at,
+        error = excluded.error
+    `).run(
+      session.id, session.runId, session.initialTaskId, session.provider, session.status,
+      session.worktreeId ?? null, session.worktreePath ?? null, session.branch ?? null,
+      session.terminalId ?? null, session.nativeSessionId ?? null, session.profileId ?? null,
+      session.agentName, session.avatarSeed, session.model ?? null, session.createdAt,
+      session.updatedAt, session.startedAt ?? null, session.lastActiveAt ?? null,
+      session.stoppedAt ?? null, session.error ?? null
     );
   }
 
@@ -787,7 +901,7 @@ const RUN_SELECT = `
 const TASK_SELECT = `
   SELECT id, run_id AS runId, ordinal, title, instructions, role, deliverable, provider, status,
          attempt, worktree_id AS worktreeId, worktree_path AS worktreePath,
-         branch, terminal_id AS terminalId, summary, error, blocker,
+         branch, terminal_id AS terminalId, agent_session_id AS agentSessionId, summary, error, blocker,
          created_at AS createdAt, updated_at AS updatedAt,
          started_at AS startedAt, completed_at AS completedAt,
          review_status AS reviewStatus, integration_status AS integrationStatus,
@@ -796,6 +910,16 @@ const TASK_SELECT = `
          profile_id AS profileId, agent_name AS agentName, avatar_seed AS avatarSeed, model,
          profile_instructions AS profileInstructions
   FROM orchestration_tasks
+`;
+
+const AGENT_SESSION_SELECT = `
+  SELECT id, run_id AS runId, initial_task_id AS initialTaskId, provider, status,
+         worktree_id AS worktreeId, worktree_path AS worktreePath, branch,
+         terminal_id AS terminalId, native_session_id AS nativeSessionId,
+         profile_id AS profileId, agent_name AS agentName, avatar_seed AS avatarSeed, model,
+         created_at AS createdAt, updated_at AS updatedAt, started_at AS startedAt,
+         last_active_at AS lastActiveAt, stopped_at AS stoppedAt, error
+  FROM agent_sessions
 `;
 
 type RunRow = Omit<
@@ -835,7 +959,7 @@ type RunRow = Omit<
 
 type TaskRow = Omit<
   OrchestrationTask,
-  | 'worktreeId' | 'worktreePath' | 'branch' | 'terminalId' | 'summary' | 'error' | 'blocker'
+  | 'worktreeId' | 'worktreePath' | 'branch' | 'terminalId' | 'agentSessionId' | 'summary' | 'error' | 'blocker'
   | 'startedAt' | 'completedAt' | 'integrationCommit' | 'integrationError'
   | 'reviewedAt' | 'integratedAt' | 'profileId' | 'agentName' | 'avatarSeed' | 'model'
   | 'profileInstructions'
@@ -844,6 +968,7 @@ type TaskRow = Omit<
   worktreePath: string | null;
   branch: string | null;
   terminalId: string | null;
+  agentSessionId: string | null;
   summary: string | null;
   error: string | null;
   blocker: string | null;
@@ -858,6 +983,24 @@ type TaskRow = Omit<
   avatarSeed: string | null;
   model: string | null;
   profileInstructions: string | null;
+};
+
+type AgentSessionRow = Omit<
+  AgentSession,
+  | 'worktreeId' | 'worktreePath' | 'branch' | 'terminalId' | 'nativeSessionId'
+  | 'profileId' | 'model' | 'startedAt' | 'lastActiveAt' | 'stoppedAt' | 'error'
+> & {
+  worktreeId: string | null;
+  worktreePath: string | null;
+  branch: string | null;
+  terminalId: string | null;
+  nativeSessionId: string | null;
+  profileId: string | null;
+  model: string | null;
+  startedAt: number | null;
+  lastActiveAt: number | null;
+  stoppedAt: number | null;
+  error: string | null;
 };
 
 function runFromRow(row: RunRow): OrchestrationRun {
@@ -908,6 +1051,7 @@ function taskFromRow(row: TaskRow): OrchestrationTask {
     worktreePath: row.worktreePath ?? undefined,
     branch: row.branch ?? undefined,
     terminalId: row.terminalId ?? undefined,
+    agentSessionId: row.agentSessionId ?? undefined,
     summary: row.summary ?? undefined,
     error: row.error ?? undefined,
     blocker: row.blocker ?? undefined,
@@ -922,5 +1066,22 @@ function taskFromRow(row: TaskRow): OrchestrationTask {
     avatarSeed: row.avatarSeed ?? undefined,
     model: row.model ?? undefined,
     profileInstructions: row.profileInstructions ?? undefined
+  };
+}
+
+function agentSessionFromRow(row: AgentSessionRow): AgentSession {
+  return {
+    ...row,
+    worktreeId: row.worktreeId ?? undefined,
+    worktreePath: row.worktreePath ?? undefined,
+    branch: row.branch ?? undefined,
+    terminalId: row.terminalId ?? undefined,
+    nativeSessionId: row.nativeSessionId ?? undefined,
+    profileId: row.profileId ?? undefined,
+    model: row.model ?? undefined,
+    startedAt: row.startedAt ?? undefined,
+    lastActiveAt: row.lastActiveAt ?? undefined,
+    stoppedAt: row.stoppedAt ?? undefined,
+    error: row.error ?? undefined
   };
 }

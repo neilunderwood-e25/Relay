@@ -194,8 +194,17 @@ describe('Orchestrator', () => {
       .toEqual(['--ask-for-approval', 'never', 'exec']);
     expect(database.getOrchestration(created.run.id)).toMatchObject({
       run: { status: 'running' },
-      tasks: [{ status: 'running' }, { status: 'running' }]
+      tasks: [{ status: 'running' }, { status: 'running' }],
+      sessions: [{ status: 'working' }, { status: 'working' }]
     });
+    const activeSnapshot = database.getOrchestration(created.run.id)!;
+    expect(new Set(activeSnapshot.sessions?.map((session) => session.id)).size).toBe(2);
+    expect(activeSnapshot.tasks.map((task) => task.agentSessionId)).toEqual(
+      activeSnapshot.sessions?.map((session) => session.id)
+    );
+    expect(activeSnapshot.sessions?.map((session) => session.terminalId)).toEqual(
+      activeSnapshot.tasks.map((task) => task.terminalId)
+    );
 
     const [first, second] = workerSessions.map(({ snapshot }) => snapshot);
     orchestrator.handleTerminalExit({ id: first.id, exitCode: 0, exitedAt: Date.now() });
@@ -203,6 +212,7 @@ describe('Orchestrator', () => {
     await finishSynthesis(orchestrator, terminals, 'All inspection tasks completed successfully.');
     await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
     expect(database.getOrchestration(created.run.id)?.tasks.every((task) => task.summary)).toBe(true);
+    expect(database.getOrchestration(created.run.id)?.sessions?.every((session) => session.status === 'stopped')).toBe(true);
     expect(database.getOrchestration(created.run.id)?.run.finalSummary).toContain('completed successfully');
     database.close();
   });
@@ -366,9 +376,12 @@ describe('Orchestrator', () => {
     await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'stopped');
 
     const task = database.getOrchestration(created.run.id)!.tasks[0];
+    const originalSessionId = task.agentSessionId;
     await expect(orchestrator.retry({ taskId: task.id })).resolves.toEqual({ ok: true });
     await eventually(() => workers(terminals).length === 2);
     expect(database.getOrchestration(created.run.id)?.run.status).toBe('running');
+    expect(database.getOrchestration(created.run.id)?.tasks[0].agentSessionId).toBe(originalSessionId);
+    expect(database.listAgentSessions(created.run.id)).toHaveLength(1);
     database.close();
   });
 
