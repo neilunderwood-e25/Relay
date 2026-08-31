@@ -6,7 +6,7 @@ The repository includes a zero-dependency HTTP server for previewing a static si
 npm run site:dev
 ```
 
-The command prints the listening URL and keeps running until you press Ctrl+C. Requests for directories serve their `index.html`; common web assets receive appropriate content types.
+The command prints the listening URL and keeps running until you press Ctrl+C. Requests for directories serve their `index.html`. The preview server recognizes HTML, CSS, JavaScript (`.js` and `.mjs`), SVG, PNG, JPEG, WebP, ICO, JSON, XML, Atom, plain-text, and WOFF2 files by extension; other files use `application/octet-stream`.
 
 To preview a different directory, pass it after `--` or set `SITE_ROOT`:
 
