@@ -4,10 +4,8 @@ import {
   Alert02Icon,
   Audit01Icon,
   Cancel01Icon,
-  ChatGptIcon,
   CheckmarkCircle02Icon,
   CleanIcon,
-  ClaudeIcon,
   Edit02Icon,
   GitBranchIcon,
   GitMergeIcon,
@@ -52,6 +50,7 @@ import { OrchestratorTerminal } from './OrchestratorTerminal';
 import { OrchestratorProjection } from './OrchestratorProjection';
 import { Tabs, TabsList, TabsTrigger } from './ui/Tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/Select';
+import { providerCliLabel, providerIcon, providerLabel, providerReady } from '../providerUi';
 import {
   Dialog,
   DialogContent,
@@ -130,6 +129,7 @@ export function OrchestratorWorkspace({
   const [savingName, setSavingName] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<'monitor' | 'terminal'>('monitor');
   const submissionRef = useRef(false);
+  const knownRunIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     if (!editingName) setNameDraft(orchestratorName);
@@ -138,7 +138,7 @@ export function OrchestratorWorkspace({
   useEffect(() => setStrategy(preferences.defaultStrategy), [preferences.defaultStrategy]);
 
   const availableProviders = useMemo(
-    () => providers.filter((provider) => provider.available).map((provider) => provider.id),
+    () => providers.filter(providerReady).map((provider) => provider.id),
     [providers]
   );
   const availableProfiles = useMemo(
@@ -169,6 +169,7 @@ export function OrchestratorWorkspace({
     try {
       const repo = await window.relay.inspectRepository(cwd);
       const nextRuns = repo.mainRoot ? await window.relay.listOrchestrations(repo.mainRoot) : [];
+      knownRunIdsRef.current = new Set(nextRuns.map(({ run }) => run.id));
       setRepository(repo);
       setRuns(nextRuns);
       setSelectedRunId((current) => current && nextRuns.some(({ run }) => run.id === current)
@@ -184,8 +185,11 @@ export function OrchestratorWorkspace({
   useEffect(() => { void refresh(); }, [refresh]);
 
   useEffect(() => window.relay.onOrchestrationUpdate((snapshot) => {
+    if (repository?.mainRoot && snapshot.run.repoRoot !== repository.mainRoot) return;
+    const isNew = !knownRunIdsRef.current.has(snapshot.run.id);
+    knownRunIdsRef.current.add(snapshot.run.id);
+    if (isNew) setSelectedRunId(snapshot.run.id);
     setRuns((current) => {
-      if (repository?.mainRoot && snapshot.run.repoRoot !== repository.mainRoot) return current;
       const exists = current.some((candidate) => candidate.run.id === snapshot.run.id);
       return exists
         ? current.map((candidate) => candidate.run.id === snapshot.run.id ? snapshot : candidate)
@@ -496,21 +500,23 @@ export function OrchestratorWorkspace({
                       })}
                     </div>
                     <div className="orchestrator-provider-switch" aria-label="Workers">
+                      <span className="orchestrator-provider-label">Workers</span>
                       {providers.map((provider) => {
                         const selected = selectedProviders.includes(provider.id);
                         return (
-                          <Tooltip key={provider.id} content={provider.id === 'claude' ? 'Claude CLI' : 'Codex CLI'}>
+                          <Tooltip key={provider.id} content={providerCliLabel(provider.id)}>
                             <Button
                               type="button"
-                              size="icon"
+                              size="sm"
                               variant={selected ? 'secondary' : 'ghost'}
                               className={`provider-toggle ${provider.id} ${selected ? 'selected' : ''}`}
-                              aria-label={provider.id === 'claude' ? 'Claude CLI' : 'Codex CLI'}
+                              aria-label={providerCliLabel(provider.id)}
                               aria-pressed={selected}
-                              disabled={!provider.available}
+                              disabled={!providerReady(provider)}
                               onClick={() => toggleProvider(provider.id)}
                             >
-                              <Icon icon={provider.id === 'claude' ? ClaudeIcon : ChatGptIcon} size={14} />
+                              <Icon icon={providerIcon(provider.id)} size={14} />
+                              <span>{providerLabel(provider.id)}</span>
                             </Button>
                           </Tooltip>
                         );
@@ -559,9 +565,12 @@ export function OrchestratorWorkspace({
                           <AgentAvatar seed={task.avatarSeed} name={task.agentName} className="plan-agent-avatar" />
                         )}
                         <span className={`orchestrator-task-provider ${task.provider}`}>
-                          <Icon icon={task.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={12} />
+                          <Icon icon={providerIcon(task.provider)} size={12} />
                         </span>
-                        <div><span>{task.agentName ?? roleLabel(task.role)}</span><strong>{task.title}</strong></div>
+                        <div>
+                          <span>{task.agentName ?? roleLabel(task.role)}{task.assignmentReason ? ` · ${task.assignmentReason}` : ''}</span>
+                          <strong>{task.title}</strong>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -642,6 +651,7 @@ function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, on
   const reviewReady = run.status === 'completed' && reviewed === tasks.length && accepted > 0;
   const integrationStatus = run.integrationStatus ?? 'pending';
   const verificationStatus = run.verificationStatus ?? 'idle';
+  const routedVerifier = verificationProvider ?? run.recommendedVerificationProvider;
 
   const openDiff = async (task: OrchestrationTask): Promise<void> => {
     setDiffTask(task);
@@ -680,7 +690,7 @@ function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, on
       const next = kind === 'integrate'
         ? await window.relay.integrateOrchestration({ runId: run.id })
         : kind === 'verify'
-          ? await window.relay.verifyOrchestration({ runId: run.id, provider: verificationProvider ?? undefined })
+          ? await window.relay.verifyOrchestration({ runId: run.id, provider: routedVerifier })
           : await window.relay.cleanupOrchestration({ runId: run.id });
       onSnapshot(next);
     } catch (cause) {
@@ -750,7 +760,7 @@ function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, on
               </Tooltip>
             )}
             {integrationStatus === 'integrated' && verificationStatus !== 'running' && (
-              <Tooltip content="Run verification">
+              <Tooltip content={routedVerifier ? `${providerLabel(routedVerifier)} verify` : 'Run verify'}>
                 <Button size="sm" variant="secondary" disabled={action !== null} onClick={() => void runAction('verify')}>
                   <Icon icon={ShieldCheckIcon} size={13} /> Verify
                 </Button>
@@ -857,10 +867,10 @@ function MissionCard({ snapshot, orchestratorName, onStop, onReplan, onRetry, on
             >
               <AgentAvatar seed={task.avatarSeed ?? task.id} name={task.agentName ?? personNameForSeed(task.id)} className="task-agent-avatar" />
               <span className={`orchestrator-task-provider ${task.provider}`}>
-                <Icon icon={task.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={13} />
+                <Icon icon={providerIcon(task.provider)} size={13} />
               </span>
               <span className="orchestrator-task-card-copy">
-                <small>{roleLabel(task.role)}</small>
+                <small>{roleLabel(task.role)}{task.assignmentReason ? ` · ${task.assignmentReason}` : ''}</small>
                 <strong>{task.title}</strong>
                 <span>{task.agentName ?? personNameForSeed(task.id)} · {task.deliverable}</span>
               </span>

@@ -15,6 +15,7 @@ import type {
 } from '../src/shared/contracts';
 import { RelayDatabase } from '../src/main/database';
 import { planObjective, Orchestrator, providerFailureMessage, verificationVerdict } from '../src/main/orchestrator';
+import { planObjectiveForAgents, recommendedVerificationAssignment } from '../src/shared/orchestration';
 
 const temporaryDirectories: string[] = [];
 
@@ -134,7 +135,16 @@ class FakeTerminals {
 
 function fixture(
   phaseTimeouts?: { planning?: number; worker?: number; synthesis?: number; verification?: number },
-  resolveWorkerSessionId?: (provider: ProviderId, cwd: string, startedAt: number) => Promise<string | undefined>
+  resolveWorkerSessionId?: (provider: ProviderId, cwd: string, startedAt: number) => Promise<string | undefined>,
+  providerCapabilities: ProviderCapability[] = capabilities(),
+  createWorkerSessionId?: (provider: ProviderId, cwd: string) => Promise<string | undefined>,
+  readWorkerResult?: (
+    provider: ProviderId,
+    cwd: string,
+    nativeSessionId: string,
+    startedAt: number,
+    requiredMarker: string
+  ) => Promise<string | undefined>
 ): {
   database: RelayDatabase;
   worktrees: FakeWorktrees;
@@ -154,10 +164,12 @@ function fixture(
     logger: pino({ enabled: false }),
     worktrees,
     terminals,
-    detectProviders: async () => capabilities(),
+    detectProviders: async () => providerCapabilities,
     getOrchestratorConfig: () => ({ provider: 'claude', model: 'claude-opus-4-1' }),
     onCoordinationMessage: (message) => messages.push(message),
     resolveWorkerSessionId,
+    createWorkerSessionId,
+    readWorkerResult,
     phaseTimeouts
   });
   return { database, worktrees, terminals, orchestrator, messages };
@@ -172,11 +184,46 @@ describe('Orchestrator', () => {
     expect(providerFailureMessage('Codex', { data: '429 rate limit exceeded', lastSequence: 1 }, 1))
       .toContain('usage limit');
   });
-  it('decomposes one objective across Claude and Codex', () => {
-    expect(planObjective('Build authentication', ['claude', 'codex'])).toMatchObject([
-      { provider: 'claude', role: 'builder', deliverable: 'Working implementation' },
-      { provider: 'codex', role: 'reviewer', deliverable: 'Tests and review' }
-    ]);
+  it('routes cohesive delivery without assigning roles from provider order', () => {
+    const forward = planObjective('Build authentication', ['claude', 'codex']);
+    const reversed = planObjective('Build authentication', ['codex', 'claude']);
+    expect(forward).toEqual(reversed);
+    expect(forward).toMatchObject([{
+      role: 'owner',
+      deliverable: 'Working implementation',
+      assignmentReason: 'Objective rotation'
+    }]);
+    expect(new Set([
+      planObjective('Build authentication', ['claude', 'codex'])[0].provider,
+      planObjective('Build payments', ['claude', 'codex'])[0].provider
+    ])).toEqual(new Set(['claude', 'codex']));
+    expect(planObjective('Use Codex to implement authentication and Claude to review it.', ['claude', 'codex']))
+      .toMatchObject([{ provider: 'codex', role: 'owner', assignmentReason: 'Explicit request' }]);
+    expect(planObjective(
+      'Use Claude for implementation and Codex for an independent audit and test improvement.',
+      ['claude', 'codex']
+    )).toMatchObject([{ provider: 'claude', role: 'owner', assignmentReason: 'Explicit request' }]);
+    expect(recommendedVerificationAssignment(
+      'Use Claude for implementation and Codex for an independent audit and test improvement.',
+      [{ provider: 'claude' }, { provider: 'codex' }],
+      [{ ...forward[0], provider: 'claude' }]
+    )).toEqual({ provider: 'codex', reason: 'Explicit request' });
+    expect(recommendedVerificationAssignment(
+      'Use Codex to implement authentication and Claude to review it.',
+      [{ provider: 'claude' }, { provider: 'codex' }],
+      [{ ...forward[0], provider: 'codex' }]
+    )).toEqual({ provider: 'claude', reason: 'Explicit request' });
+    expect(planObjectiveForAgents('Build an accessible frontend form.', [
+      { provider: 'codex', profileId: 'backend', instructions: 'Own database migrations and API services.' },
+      { provider: 'claude', profileId: 'frontend', instructions: 'Own accessible frontend interfaces.' }
+    ])).toMatchObject([{ provider: 'claude', assignmentReason: 'Profile specialty' }]);
+    expect(planObjective('Use Cursor Agent to implement the dashboard.', ['claude', 'codex', 'cursor']))
+      .toMatchObject([{ provider: 'cursor', role: 'owner', assignmentReason: 'Explicit request' }]);
+    expect(recommendedVerificationAssignment(
+      'Use Cursor to review the implementation.',
+      [{ provider: 'claude' }, { provider: 'cursor' }],
+      [{ ...forward[0], provider: 'claude' }]
+    )).toEqual({ provider: 'cursor', reason: 'Explicit request' });
   });
 
   it('supports parallel workstreams and independent audits', () => {
@@ -196,6 +243,7 @@ describe('Orchestrator', () => {
       repoPath: '/repo',
       objective: 'Inspect the project without modifying files',
       providers: ['claude', 'codex'],
+      strategy: 'audit',
       concurrency: 2
     });
 
@@ -242,12 +290,64 @@ describe('Orchestrator', () => {
     database.close();
   });
 
+  it('runs, follows up, and resumes a Cursor worker in its Relay worktree', async () => {
+    const nativeId = '01a057e7-ce82-7031-9fc4-cf3ec5800005';
+    const { database, terminals, orchestrator } = fixture(
+      undefined,
+      async (provider) => provider === 'cursor' ? nativeId : undefined,
+      capabilities(['cursor']),
+      async (provider) => provider === 'cursor' ? nativeId : undefined,
+      async (_provider, _cwd, _nativeSessionId, _startedAt, requiredMarker) =>
+        `Clean structured Cursor result.\n${requiredMarker}`
+    );
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Use Cursor Agent to implement the settings panel.',
+      providers: ['cursor']
+    });
+    expect(created.run.planningProvider).toBe('cursor');
+    expect(planner(terminals).args).toEqual(expect.arrayContaining(['stream-json', 'plan']));
+    await finishPlanningWithFallback(orchestrator, terminals);
+    const worker = workers(terminals)[0];
+    expect(worker.snapshot.provider).toBe('cursor');
+    expect(worker.snapshot.cwd).toContain('worktrees');
+    expect(worker.args).toEqual(expect.arrayContaining(['--force', '--sandbox', 'enabled']));
+    expect(worker.args).toEqual(expect.arrayContaining(['--resume', nativeId]));
+    expect(worker.args).not.toContain('--print');
+    await eventually(() => database.getOrchestration(created.run.id)?.sessions?.[0]?.nativeSessionId === nativeId);
+
+    const taskPrompt = terminals.submitted.find(({ id }) => id === worker.snapshot.id)?.text ?? '';
+    const taskToken = taskPrompt.match(/COMPLETE:([a-f0-9]+)/)?.[1];
+    const taskOutput = `Cursor completed the settings panel.\nRELAY_TASK_COMPLETE:${taskToken}`;
+    terminals.replayData.set(worker.snapshot.id, taskOutput);
+    orchestrator.handleTerminalData({ id: worker.snapshot.id, data: taskOutput, sequence: 1 });
+    await eventually(() => database.getOrchestration(created.run.id)?.sessions?.[0]?.status === 'idle');
+    expect(database.getOrchestration(created.run.id)?.tasks[0].summary).toBe('Clean structured Cursor result.');
+
+    const sessionId = database.getOrchestration(created.run.id)!.sessions![0].id;
+    await orchestrator.submitAgentSessionInput({ sessionId, prompt: 'Adjust the spacing.' });
+    const followupPrompt = terminals.submitted.at(-1)?.text ?? '';
+    const followupToken = followupPrompt.match(/READY:([a-f0-9]+)/)?.[1];
+    const followupOutput = `Spacing adjusted.\nRELAY_AGENT_READY:${followupToken}`;
+    terminals.replayData.set(worker.snapshot.id, followupOutput);
+    orchestrator.handleTerminalData({ id: worker.snapshot.id, data: followupOutput, sequence: 2 });
+    await eventually(() => database.getAgentSession(sessionId)?.status === 'idle');
+
+    await orchestrator.stopAgentSession({ sessionId });
+    orchestrator.handleTerminalExit({ id: worker.snapshot.id, exitCode: 0, exitedAt: Date.now() });
+    await eventually(() => database.getAgentSession(sessionId)?.status === 'stopped');
+    await orchestrator.restartAgentSession({ sessionId });
+    expect(workers(terminals).at(-1)?.args).toEqual(expect.arrayContaining(['--resume', nativeId]));
+    database.close();
+  });
+
   it('completes interactive workers from protocol markers while keeping their CLIs alive', async () => {
     const { database, terminals, orchestrator } = fixture();
     const created = await orchestrator.create({
       repoPath: '/repo',
       objective: 'Build; Verify',
       providers: ['claude', 'codex'],
+      strategy: 'parallel',
       concurrency: 2
     });
     await finishPlanningWithFallback(orchestrator, terminals);
@@ -264,10 +364,10 @@ describe('Orchestrator', () => {
     }
 
     await eventually(() => database.getOrchestration(created.run.id)?.tasks.every((task) => task.status === 'completed') === true);
-    expect(database.getOrchestration(created.run.id)?.sessions).toMatchObject([
+    expect(database.getOrchestration(created.run.id)?.sessions).toEqual(expect.arrayContaining([
       { provider: 'claude', status: 'idle' },
       { provider: 'codex', status: 'idle' }
-    ]);
+    ].map((expected) => expect.objectContaining(expected))));
     expect(terminals.stopped).toEqual([]);
     await finishSynthesis(orchestrator, terminals, 'Both interactive workers completed and remain available.');
     await eventually(() => database.getOrchestration(created.run.id)?.run.status === 'completed');
@@ -729,46 +829,77 @@ describe('Orchestrator', () => {
     database.close();
   });
 
-  it('materializes a valid model-authored plan', async () => {
+  it('materializes a provider-neutral model-authored plan', async () => {
     const { database, terminals, orchestrator } = fixture();
     const created = await orchestrator.create({
       repoPath: '/repo',
-      objective: 'Build a secure settings screen',
+      objective: 'Use Codex to implement a secure settings screen and Claude to review it.',
       providers: ['claude', 'codex'],
       concurrency: 2
     });
     const planning = planner(terminals);
     terminals.replayData.set(planning.snapshot.id, JSON.stringify({
-      summary: 'Separate implementation from independent validation.',
+      summary: 'Codex owns cohesive delivery; Relay verifies after integration.',
       tasks: [
         {
           title: 'Build settings UI',
-          role: 'builder',
+          role: 'owner',
           deliverable: 'Working settings screen',
-          instructions: 'Implement the settings screen and its state handling.',
-          provider: 'claude'
-        },
-        {
-          title: 'Validate settings',
-          role: 'reviewer',
-          deliverable: 'Focused tests and review',
-          instructions: 'Add focused tests and inspect accessibility and unsafe state transitions.',
-          provider: 'codex'
+          instructions: 'Implement and test the settings screen and its state handling.',
+          provider: 'codex',
+          assignmentReason: 'Explicit request'
         }
       ]
     }));
     orchestrator.handleTerminalExit({ id: planning.snapshot.id, exitCode: 0, exitedAt: Date.now() });
-    await eventually(() => workers(terminals).length === 2);
+    await eventually(() => workers(terminals).length === 1);
 
     expect(database.getOrchestration(created.run.id)).toMatchObject({
       run: {
         planningSource: 'model',
-        planningSummary: 'Separate implementation from independent validation.',
+        planningSummary: 'Codex owns cohesive delivery; Relay verifies after integration.',
+        recommendedVerificationProvider: 'claude',
         status: 'running'
       },
       tasks: [
-        { title: 'Build settings UI', provider: 'claude', status: 'running' },
-        { title: 'Validate settings', provider: 'codex', status: 'running' }
+        { title: 'Build settings UI', provider: 'codex', status: 'running', assignmentReason: 'Explicit request' }
+      ]
+    });
+    database.close();
+  });
+
+  it('runs one model-authored mixed team across Claude, Codex, and Cursor', async () => {
+    const { database, terminals, orchestrator } = fixture(
+      undefined,
+      undefined,
+      capabilities(['claude', 'codex', 'cursor'])
+    );
+    const created = await orchestrator.create({
+      repoPath: '/repo',
+      objective: 'Create three independent compatibility fixtures with Claude, Codex, and Cursor.',
+      strategy: 'parallel',
+      providers: ['cursor', 'claude', 'codex'],
+      concurrency: 3
+    });
+    const planning = planner(terminals);
+    terminals.replayData.set(planning.snapshot.id, JSON.stringify({
+      summary: 'Three isolated fixtures exercise the complete provider pool.',
+      tasks: [
+        { title: 'Claude fixture', role: 'builder', deliverable: 'claude.txt', instructions: 'Create only claude.txt.', provider: 'claude', assignmentReason: 'Independent fixture' },
+        { title: 'Cursor fixture', role: 'specialist', deliverable: 'cursor.txt', instructions: 'Create only cursor.txt.', provider: 'cursor', assignmentReason: 'Independent fixture' },
+        { title: 'Codex fixture', role: 'builder', deliverable: 'codex.txt', instructions: 'Create only codex.txt.', provider: 'codex', assignmentReason: 'Independent fixture' }
+      ]
+    }));
+    orchestrator.handleTerminalExit({ id: planning.snapshot.id, exitCode: 0, exitedAt: Date.now() });
+    await eventually(() => workers(terminals).length === 3);
+
+    expect(workers(terminals).map(({ snapshot }) => snapshot.provider).sort()).toEqual(['claude', 'codex', 'cursor']);
+    expect(database.getOrchestration(created.run.id)).toMatchObject({
+      run: { planningSource: 'model', status: 'running' },
+      tasks: [
+        { provider: 'claude', status: 'running' },
+        { provider: 'cursor', status: 'running' },
+        { provider: 'codex', status: 'running' }
       ]
     });
     database.close();
@@ -857,6 +988,7 @@ describe('Orchestrator', () => {
       repoPath: '/repo',
       objective: 'Build; Verify',
       providers: ['claude', 'codex'],
+      strategy: 'parallel',
       concurrency: 1
     });
 
@@ -927,10 +1059,13 @@ describe('Orchestrator', () => {
     expect(integrated.run.integrationStatus).toBe('integrated');
     expect(integrated.tasks.map((task) => task.integrationCommit)).toEqual(['commit-1', 'commit-2']);
 
-    const verifying = await orchestrator.verify({ runId: created.run.id, provider: 'codex' });
-    expect(verifying.run).toMatchObject({ verificationStatus: 'running', verificationProvider: 'codex' });
+    const verifying = await orchestrator.verify({ runId: created.run.id });
+    expect(verifying.run).toMatchObject({
+      verificationStatus: 'running',
+      verificationProvider: integrated.run.recommendedVerificationProvider
+    });
     expect(terminals.spawned.at(-1)?.snapshot.role).toBe('verifier');
-    expect(terminals.spawned.at(-1)?.args).toContain('read-only');
+    expect(terminals.spawned.at(-1)?.args?.join(' ')).toContain('read-only');
     terminals.replayData.set(
       verifying.run.verificationTerminalId!,
       'All project checks passed.\nRELAY_VERDICT: PASS'
@@ -989,7 +1124,11 @@ describe('Orchestrator', () => {
     expect(messages.map((message) => message.kind)).toEqual(expect.arrayContaining(['status', 'blocker', 'summary']));
 
     const replacement = await orchestrator.replan({ runId: created.run.id });
-    expect(replacement.run).toMatchObject({ status: 'planning', parentRunId: created.run.id });
+    expect(replacement.run).toMatchObject({
+      status: 'planning',
+      parentRunId: created.run.id,
+      planningProviders: ['claude']
+    });
     const nextPlanner = terminals.spawned.filter(({ snapshot }) => snapshot.role === 'planner').at(-1)!;
     expect(nextPlanner.args?.at(-1)).toContain('Previous run evidence');
     expect(messages.at(-1)).toMatchObject({ kind: 'replan', runId: created.run.id });
@@ -1010,7 +1149,11 @@ describe('Orchestrator', () => {
     database.updateOrchestrationRun(conflicted.run);
 
     const replacement = await orchestrator.replan({ runId: created.run.id });
-    expect(replacement.run).toMatchObject({ status: 'planning', parentRunId: created.run.id });
+    expect(replacement.run).toMatchObject({
+      status: 'planning',
+      parentRunId: created.run.id,
+      planningProviders: ['claude', 'codex']
+    });
     expect(replacement.run.replanContext).toContain('Integration: Conflicts in README.md');
     expect(terminals.spawned.filter(({ snapshot }) => snapshot.role === 'planner').at(-1)?.args?.at(-1))
       .toContain('Integration: Conflicts in README.md');
@@ -1018,8 +1161,8 @@ describe('Orchestrator', () => {
   });
 });
 
-function capabilities(): ProviderCapability[] {
-  return (['claude', 'codex'] as const).map((id) => ({
+function capabilities(ids: ProviderId[] = ['claude', 'codex']): ProviderCapability[] {
+  return ids.map((id) => ({
     id,
     label: id,
     command: id,

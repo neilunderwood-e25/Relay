@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import type {
-  AgentProfile,
-  AgentProfileSaveRequest,
-  OperationResult,
-  OrchestrationStrategy,
-  OrchestrationTemplate,
-  OrchestrationTemplateSaveRequest,
-  ProviderId
+import {
+  PROVIDER_IDS,
+  type AgentProfile,
+  type AgentProfileSaveRequest,
+  type OperationResult,
+  type OrchestrationStrategy,
+  type OrchestrationTemplate,
+  type OrchestrationTemplateSaveRequest,
+  type ProviderId
 } from '../shared/contracts';
 import type { RelayDatabase } from './database';
 
@@ -29,7 +30,7 @@ export class ExtensionRegistry {
     const name = cleanName(request?.name);
     if (!name || !NAME_PATTERN.test(name)) throw new Error('Use a profile name between 1 and 32 characters.');
     const requestedProvider = request?.provider;
-    if (!requestedProvider || !['claude', 'codex'].includes(requestedProvider)) throw new Error('Choose Claude or Codex.');
+    if (!requestedProvider || !PROVIDER_IDS.includes(requestedProvider)) throw new Error('Choose a supported provider.');
     const provider = request.provider as ProviderId;
     const model = cleanModel(request?.model);
     const instructions = cleanInstructions(request?.instructions);

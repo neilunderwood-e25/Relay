@@ -30,7 +30,7 @@ import type {
   WorktreeCreateRequest,
   WorktreeSnapshot
 } from '../shared/contracts';
-import { DEFAULT_AGENT_NAMES, DEFAULT_ORCHESTRATOR_NAME } from '../shared/contracts';
+import { DEFAULT_AGENT_NAMES, DEFAULT_ORCHESTRATOR_NAME, PROVIDER_IDS } from '../shared/contracts';
 import { personNameForSeed } from '../shared/agentIdentity';
 import { intelligentPlanningPrompt, parseIntelligentPlan } from '../shared/intelligentPlan';
 import {
@@ -38,11 +38,16 @@ import {
   intelligentSynthesisPrompt,
   parseIntelligentSynthesis
 } from '../shared/intelligentSynthesis';
-import { planObjective, planObjectiveForAgents } from '../shared/orchestration';
+import {
+  planObjective,
+  planObjectiveForAgents,
+  recommendedVerificationAssignment
+} from '../shared/orchestration';
 import type { PlannedTask } from '../shared/orchestration';
 import { extractProviderResult } from '../shared/providerOutput';
 import type { RelayDatabase } from './database';
 import { providerAdapter } from './providerAdapters';
+import { isProviderReady } from './providers';
 
 export { planObjective } from '../shared/orchestration';
 
@@ -121,6 +126,17 @@ export interface OrchestratorOptions {
     provider: ProviderId,
     cwd: string,
     startedAt: number
+  ) => Promise<string | undefined>;
+  createWorkerSessionId?: (
+    provider: ProviderId,
+    cwd: string
+  ) => Promise<string | undefined>;
+  readWorkerResult?: (
+    provider: ProviderId,
+    cwd: string,
+    nativeSessionId: string,
+    startedAt: number,
+    requiredMarker: string
   ) => Promise<string | undefined>;
   onUpdate?: (snapshot: OrchestrationSnapshot) => void;
 }
@@ -323,6 +339,18 @@ export class Orchestrator {
       this.emit(session.runId);
 
       try {
+        if (session.provider === 'cursor' && !session.nativeSessionId && this.options.resolveWorkerSessionId) {
+          session.nativeSessionId = await this.options.resolveWorkerSessionId(
+            session.provider,
+            session.worktreePath,
+            session.startedAt ?? session.createdAt
+          );
+          if (!session.nativeSessionId) {
+            throw new Error('Cursor conversation identity could not be recovered. Start a new task instead.');
+          }
+          session.updatedAt = Date.now();
+          this.options.database.upsertAgentSession(session);
+        }
         const spawned = await this.options.terminals.spawn({
           provider: session.provider,
           outputMode: 'terminal',
@@ -428,7 +456,7 @@ export class Orchestrator {
     }
 
     const capabilities = await this.options.detectProviders();
-    const available = new Set(capabilities.filter((provider) => provider.available).map((provider) => provider.id));
+    const available = new Set(capabilities.filter(isProviderReady).map((provider) => provider.id));
     const template = request.templateId
       ? this.options.database.getOrchestrationTemplate(request.templateId)
       : undefined;
@@ -467,7 +495,7 @@ export class Orchestrator {
       integrationStatus: 'pending',
       verificationStatus: 'idle',
       templateId: template?.id,
-      planningProviders: uniqueProviders(providers),
+      planningProviders: uniqueProviders(providers).sort(),
       planningProfileIds: profiles.map((profile) => profile.id),
       parentRunId: replan?.parentRunId,
       replanContext: replan?.context,
@@ -511,8 +539,8 @@ export class Orchestrator {
       objective: source.run.objective,
       strategy: source.run.strategy,
       baseBranch: source.run.baseBranch,
-      providers: providers.length > 0 ? providers : source.run.planningProviders,
-      profileIds: profileIds.length > 0 ? profileIds : source.run.planningProfileIds,
+      providers: (source.run.planningProviders?.length ?? 0) > 0 ? source.run.planningProviders : providers,
+      profileIds: (source.run.planningProfileIds?.length ?? 0) > 0 ? source.run.planningProfileIds : profileIds,
       concurrency: source.run.concurrency,
       templateId: source.run.templateId
     }, { parentRunId: source.run.id, context });
@@ -802,9 +830,9 @@ export class Orchestrator {
       }
       if (snapshot.run.verificationStatus === 'running') throw new Error('Verification is already running.');
       const capabilities = await this.options.detectProviders();
-      const requested = request.provider;
-      const provider = capabilities.find((candidate) => candidate.available && candidate.id === requested)
-        ?? capabilities.find((candidate) => candidate.available);
+      const requested = request.provider ?? snapshot.run.recommendedVerificationProvider;
+      const provider = capabilities.find((candidate) => isProviderReady(candidate) && candidate.id === requested)
+        ?? capabilities.find(isProviderReady);
       if (!provider) throw new Error('No supported CLI verifier is available.');
 
       const prompt = verificationPrompt(snapshot.run, this.options.getOrchestratorName?.() ?? DEFAULT_ORCHESTRATOR_NAME);
@@ -917,7 +945,9 @@ export class Orchestrator {
             if (event.exitCode !== 0) throw new Error(providerFailureMessage('Planner', replay, event.exitCode));
             const parsed = parseIntelligentPlan(replay.data, {
               providers: current.run.planningProviders ?? [],
-              profiles: this.planningCandidates(current.run)
+              profiles: this.planningCandidates(current.run),
+              objective: current.run.objective,
+              strategy: current.run.strategy
             });
             this.materializePlan(current.run, parsed.tasks, parsed.summary, 'model');
           } catch (error) {
@@ -1066,7 +1096,8 @@ export class Orchestrator {
       const now = Date.now();
       const replay = this.safeReplay(terminalId);
       const transcript = replay.data || signal.transcript;
-      current.summary = interactiveSummary(transcript, signal.completionMarker, signal.blockedMarker);
+      const session = this.options.database.getAgentSessionByTerminal(terminalId);
+      current.summary = await this.workerSummary(session, signal, transcript);
       current.blocker = blocker;
       current.status = blocker ? 'blocked' : 'completed';
       current.error = undefined;
@@ -1074,7 +1105,6 @@ export class Orchestrator {
       current.completedAt = now;
       this.options.database.updateOrchestrationTask(current);
 
-      const session = this.options.database.getAgentSessionByTerminal(terminalId);
       if (session) {
         session.status = 'idle';
         session.updatedAt = now;
@@ -1151,7 +1181,7 @@ export class Orchestrator {
         }
 
         const transcript = signal.transcript || replay.data;
-        task.summary = interactiveSummary(transcript, signal.completionMarker, signal.blockedMarker);
+        task.summary = await this.workerSummary(current, signal, transcript);
         task.status = blocker ? 'blocked' : stoppedByUser ? 'stopped' : followupError ? 'failed' : 'completed';
         task.blocker = blocker;
         task.error = followupError;
@@ -1227,6 +1257,46 @@ export class Orchestrator {
     this.workerSignals.delete(terminalId);
   }
 
+  private async workerSummary(
+    session: AgentSession | undefined,
+    signal: InteractiveWorkerSignal,
+    terminalTranscript: string
+  ): Promise<string | undefined> {
+    if (!session?.worktreePath || !this.options.readWorkerResult) {
+      return interactiveSummary(terminalTranscript, signal.completionMarker, signal.blockedMarker);
+    }
+    try {
+      let nativeSessionId = session.nativeSessionId;
+      if (!nativeSessionId && this.options.resolveWorkerSessionId) {
+        nativeSessionId = await this.options.resolveWorkerSessionId(
+          session.provider,
+          session.worktreePath,
+          session.startedAt ?? session.createdAt
+        );
+        if (nativeSessionId) {
+          session.nativeSessionId = nativeSessionId;
+          session.updatedAt = Date.now();
+          this.options.database.upsertAgentSession(session);
+        }
+      }
+      if (nativeSessionId) {
+        const nativeResult = await this.options.readWorkerResult(
+          session.provider,
+          session.worktreePath,
+          nativeSessionId,
+          session.startedAt ?? session.createdAt,
+          signal.completionMarker
+        );
+        if (nativeResult) {
+          return structuredWorkerSummary(nativeResult, signal.completionMarker, signal.blockedMarker);
+        }
+      }
+    } catch (error) {
+      this.options.logger.warn({ error, sessionId: session.id }, 'Could not read structured provider result');
+    }
+    return interactiveSummary(terminalTranscript, signal.completionMarker, signal.blockedMarker);
+  }
+
   private async captureTaskDiff(taskId: string): Promise<{ fingerprint?: string; error?: string }> {
     const task = this.options.database.getOrchestrationTask(taskId);
     if (!task?.worktreeId) return { error: 'The task worktree is unavailable.' };
@@ -1270,8 +1340,8 @@ export class Orchestrator {
   private async startPlanning(run: OrchestrationRun, fallback: PlannedTask[]): Promise<void> {
     const configured = this.options.getOrchestratorConfig?.();
     const capabilities = await this.options.detectProviders();
-    const planner = capabilities.find((candidate) => candidate.available && candidate.id === configured?.provider)
-      ?? capabilities.find((candidate) => candidate.available);
+    const planner = capabilities.find((candidate) => isProviderReady(candidate) && candidate.id === configured?.provider)
+      ?? capabilities.find(isProviderReady);
     if (!planner) {
       this.materializePlan(run, fallback, 'No planner CLI was available; Relay used its safe plan.', 'fallback', 'No planner CLI is available.');
       return;
@@ -1350,6 +1420,21 @@ export class Orchestrator {
     error?: string
   ): void {
     const now = Date.now();
+    const selectedProfiles = (run.planningProfileIds?.length ?? 0) > 0
+      ? this.planningCandidates(run)
+      : [];
+    const verification = recommendedVerificationAssignment(
+      run.objective,
+      selectedProfiles.length > 0
+        ? selectedProfiles.map((profile) => ({
+            provider: profile.provider,
+            profileId: profile.id,
+            name: profile.name,
+            instructions: profile.instructions
+          }))
+        : (run.planningProviders ?? []).map((provider) => ({ provider })),
+      plans
+    );
     const tasks = plans.map((plan, ordinal): OrchestrationTask => ({
       id: `task-${randomUUID().slice(0, 12)}`,
       runId: run.id,
@@ -1368,14 +1453,19 @@ export class Orchestrator {
       avatarSeed: plan.avatarSeed,
       model: plan.model,
       profileInstructions: plan.profileInstructions,
+      assignmentReason: plan.assignmentReason,
       createdAt: now,
       updatedAt: now
     }));
     run.status = 'queued';
     run.concurrency = Math.max(1, Math.min(run.concurrency, tasks.length));
-    run.planningSummary = summary.slice(0, 500);
+    run.planningSummary = (source === 'fallback'
+      ? fallbackRoutingSummary(plans, verification?.provider)
+      : summary).slice(0, 500);
     run.planningSource = source;
     run.planningError = error?.slice(0, 500);
+    run.recommendedVerificationProvider = verification?.provider;
+    run.verificationAssignmentReason = verification?.reason;
     run.updatedAt = now;
     this.options.database.createOrchestration({ run, tasks });
     this.options.database.appendEvent('orchestration.planning.finished', {
@@ -1442,6 +1532,12 @@ export class Orchestrator {
         ? this.options.database.getAgentSession(task.agentSessionId)
         : undefined) ?? this.options.database.getAgentSessionByTask(task.id);
       session = this.prepareAgentSession(run, task);
+      if (task.provider === 'cursor' && !session.nativeSessionId && this.options.createWorkerSessionId) {
+        session.nativeSessionId = await this.options.createWorkerSessionId(task.provider, task.worktreePath);
+        if (!session.nativeSessionId) throw new Error('Cursor did not return a reusable chat identity.');
+        session.updatedAt = Date.now();
+        this.options.database.upsertAgentSession(session);
+      }
       const completionToken = randomUUID().replace(/-/g, '').slice(0, 20);
       const prompt = workerPrompt(
         run,
@@ -1562,8 +1658,8 @@ export class Orchestrator {
     if (!snapshot || snapshot.run.synthesisStatus !== 'running') return;
     const configured = this.options.getOrchestratorConfig?.();
     const capabilities = await this.options.detectProviders();
-    const provider = capabilities.find((candidate) => candidate.available && candidate.id === configured?.provider)
-      ?? capabilities.find((candidate) => candidate.available);
+    const provider = capabilities.find((candidate) => isProviderReady(candidate) && candidate.id === configured?.provider)
+      ?? capabilities.find(isProviderReady);
     if (!provider) {
       this.finalizeSynthesis(
         snapshot,
@@ -1855,6 +1951,7 @@ function workerPrompt(
     `Provider: ${DEFAULT_AGENT_NAMES[task.provider]}.`,
     `Objective: ${run.objective}`,
     `Role: ${task.role}`,
+    task.assignmentReason ? `Assignment reason: ${task.assignmentReason}.` : '',
     `Your task: ${task.instructions}`,
     `Expected deliverable: ${task.deliverable}`,
     task.profileInstructions ? `Agent profile: ${task.profileInstructions}` : '',
@@ -1868,6 +1965,14 @@ function workerPrompt(
       `\`BLOCKED:${completionToken}: <short reason>\` with no space around the plus sign.`,
     'After emitting either marker, wait for the next instruction and do not exit the CLI.'
   ].filter(Boolean).join('\n\n').slice(0, 4_000);
+}
+
+function fallbackRoutingSummary(tasks: PlannedTask[], verifier?: ProviderId): string {
+  const assignments = tasks.map((task) =>
+    `${DEFAULT_AGENT_NAMES[task.provider]} ${task.role === 'owner' ? 'owns delivery' : `handles ${task.role}`}`
+  );
+  const verification = verifier ? `${DEFAULT_AGENT_NAMES[verifier]} is recommended for verification.` : '';
+  return [...assignments, verification].filter(Boolean).join('. ');
 }
 
 function agentFollowupPrompt(prompt: string, completionToken: string): string {
@@ -1910,7 +2015,7 @@ function validStrategy(value: unknown): value is OrchestrationStrategy {
 }
 
 function uniqueProviders(providers: ProviderId[]): ProviderId[] {
-  return [...new Set(providers.filter((provider): provider is ProviderId => ['claude', 'codex'].includes(provider)))];
+  return [...new Set(providers.filter((provider): provider is ProviderId => PROVIDER_IDS.includes(provider)))];
 }
 
 function resolveProfiles(
@@ -1961,6 +2066,16 @@ function interactiveSummary(transcript: string, completionMarker: string, blocke
     .replaceAll(blockedMarker, 'RELAY_BLOCKER:')
     .trim();
   return plain ? plain.slice(-4_000) : undefined;
+}
+
+function structuredWorkerSummary(transcript: string, completionMarker: string, blockedMarker: string): string | undefined {
+  const plain = stripTerminalControl(transcript)
+    .replaceAll(completionMarker, '')
+    .replaceAll(blockedMarker, 'RELAY_BLOCKER:')
+    .trim();
+  if (!plain) return undefined;
+  if (plain.length <= 4_000) return plain;
+  return `${plain.slice(0, 3_000).trimEnd()}\n\n…\n\n${plain.slice(-900).trimStart()}`;
 }
 
 function blockerFromReplay(replay: TerminalReplay): string | undefined {

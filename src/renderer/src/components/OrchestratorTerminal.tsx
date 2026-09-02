@@ -1,7 +1,5 @@
 import { useState } from 'react';
 import {
-  ChatGptIcon,
-  ClaudeIcon,
   PlugZapIcon,
   RefreshIcon,
   SquareStopIcon,
@@ -16,6 +14,7 @@ import { Button } from './ui/Button';
 import { Alert, AlertDescription } from './ui/alert';
 import { Card, CardContent, CardFooter, CardHeader } from './ui/Card';
 import { Icon } from './ui/Icon';
+import { providerIcon } from '../providerUi';
 import { Tooltip } from './ui/app-tooltip';
 
 export function OrchestratorTerminal({
@@ -119,7 +118,7 @@ export function OrchestratorTerminal({
             <span className="empty-terminal-icon"><Icon icon={SquareTerminalIcon} size={26} /></span>
             <div className="orchestrator-provider-summary">
               <span className={`provider-name ${orchestratorProvider}`}>
-                <Icon icon={orchestratorProvider === 'claude' ? ClaudeIcon : ChatGptIcon} size={14} />
+                <Icon icon={providerIcon(orchestratorProvider)} size={14} />
                 {DEFAULT_AGENT_NAMES[orchestratorProvider]}
               </span>
               <span>{modelLabel}</span>
@@ -132,7 +131,7 @@ export function OrchestratorTerminal({
         {terminal ? (
           <>
             <span className={`provider-name ${terminal.provider}`}>
-              <Icon icon={terminal.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={12} />
+              <Icon icon={providerIcon(terminal.provider)} size={12} />
               {name}
             </span>
             <span className="terminal-provider-label">

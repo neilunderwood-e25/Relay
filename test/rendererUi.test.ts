@@ -68,6 +68,8 @@ describe('renderer design-system contract', () => {
     expect(orchestrator).toContain("run.integrationStatus === 'conflict'");
     expect(orchestrator).toContain("integrationStatus === 'integrated' && verificationStatus !== 'running'");
     expect(orchestrator).toContain("'Stop verifier'");
+    expect(orchestrator).toContain('task.assignmentReason');
+    expect(orchestrator).toContain('run.recommendedVerificationProvider');
   });
 
   it('projects the shared Michael PTY without mounting a second terminal', () => {
@@ -79,7 +81,9 @@ describe('renderer design-system contract', () => {
   });
 
   it('provides a reusable worker console instead of anonymous terminal tabs', () => {
+    const app = read('src/renderer/src/App.tsx');
     const console = read('src/renderer/src/components/TerminalWorkspace.tsx');
+    expect(app).toContain("terminals.filter((terminal) => terminal.status !== 'exited').length");
     expect(console).toContain('window.relay.listAgentSessions');
     expect(console).toContain('window.relay.submitAgentSessionInput');
     expect(console).toContain('window.relay.restartAgentSession');
@@ -87,6 +91,10 @@ describe('renderer design-system contract', () => {
     expect(console).toContain('allTerminals.find(({ id }) => id === selectedId)');
     expect(console).toContain('selectedSession.terminalId');
     expect(console).toContain('selectedTerminalIsInteractive');
+    expect(console).toContain("(selectedTerminal.outputMode ?? 'terminal') === 'terminal'");
+    expect(console).not.toContain("(selectedTerminal.role ?? 'worker') === 'worker'");
+    expect(console).toContain("terminal.role === 'orchestrator' ? 'Auto mode' : 'Interactive'");
+    expect(console).toContain('compactTerminalPath(selectedTerminal.cwd)');
     expect(console).toContain('aria-label="Agent follow-up"');
     expect(console).toContain('className="agent-session-rail"');
     expect(console).not.toContain('<Tabs');
@@ -110,6 +118,24 @@ describe('renderer design-system contract', () => {
     expect(worktrees).toContain('Worktree created, but the IDE workspace could not be opened.');
     expect(worktreeManager).toContain("['--reuse-window', workspacePath]");
     expect(worktreeManager).not.toContain("['--new-window', workspacePath]");
+  });
+
+  it('presents all worker engines with readable, shared provider states', () => {
+    const providerUi = read('src/renderer/src/providerUi.ts');
+    const startup = read('src/renderer/src/components/StartupWizard.tsx');
+    const orchestrator = read('src/renderer/src/components/OrchestratorWorkspace.tsx');
+    const settings = read('src/renderer/src/components/SettingsWorkspace.tsx');
+
+    expect(providerUi).toContain("export type ProviderState = 'ready' | 'signin' | 'missing' | 'error'");
+    expect(providerUi).toContain('providerModelOptions');
+    expect(startup).toContain('providerStatusDetail(selectedProvider)');
+    expect(startup).toContain('provider-option');
+    expect(orchestrator).toContain('orchestrator-provider-label">Workers');
+    expect(orchestrator).toContain('{providerLabel(provider.id)}');
+    expect(orchestrator).toContain('knownRunIdsRef');
+    expect(orchestrator).toContain('if (isNew) setSelectedRunId(snapshot.run.id)');
+    expect(settings).toContain('onRefreshProviders');
+    expect(settings).toContain('provider-health-copy');
   });
 
   it('retains compact-window layout rules without crushing terminal controls', () => {

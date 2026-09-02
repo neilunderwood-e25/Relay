@@ -4,7 +4,7 @@ import type {
   OrchestrationTaskRole,
   ProviderId
 } from './contracts';
-import type { PlannedTask } from './orchestration';
+import { explicitProviderForRole, type PlannedTask } from './orchestration';
 
 const ROLES: OrchestrationTaskRole[] = ['owner', 'builder', 'specialist', 'reviewer', 'investigator'];
 
@@ -16,6 +16,8 @@ export interface ParsedIntelligentPlan {
 export interface IntelligentPlanContext {
   providers: ProviderId[];
   profiles: AgentProfile[];
+  objective?: string;
+  strategy?: OrchestrationStrategy;
 }
 
 export function parseIntelligentPlan(output: string, context: IntelligentPlanContext): ParsedIntelligentPlan {
@@ -57,9 +59,26 @@ export function parseIntelligentPlan(output: string, context: IntelligentPlanCon
       role,
       title: requiredString(task.title, 80, `Planner task ${index + 1} needs a title.`),
       instructions: requiredString(task.instructions, 2_000, `Planner task ${index + 1} needs instructions.`),
-      deliverable: requiredString(task.deliverable, 160, `Planner task ${index + 1} needs a deliverable.`)
+      deliverable: requiredString(task.deliverable, 160, `Planner task ${index + 1} needs a deliverable.`),
+      assignmentReason: conciseReason(task.assignmentReason, profile ? 'Profile specialty' : 'Task fit')
     };
   });
+
+  if (context.strategy === 'balanced' && tasks.length > 1) {
+    const hasImplementation = tasks.some(({ role }) => ['owner', 'builder', 'specialist'].includes(role));
+    const hasReviewer = tasks.some(({ role }) => role === 'reviewer');
+    if (hasImplementation && hasReviewer) {
+      throw new Error('Post-implementation review must use Relay verification, not a sibling worktree.');
+    }
+  }
+  const requestedImplementer = context.objective
+    ? explicitProviderForRole(context.objective, 'implementation')
+    : undefined;
+  if (requestedImplementer
+    && available.has(requestedImplementer)
+    && !tasks.some((task) => task.provider === requestedImplementer && ['owner', 'builder', 'specialist'].includes(task.role))) {
+    throw new Error(`Planner ignored the explicit ${requestedImplementer} implementation assignment.`);
+  }
 
   return {
     summary: optionalString(record.summary, 500) || 'Michael created a model-driven execution plan.',
@@ -102,11 +121,14 @@ export function intelligentPlanningPrompt({
     replanContext ? `Previous run evidence: ${replanContext.replace(/\s+/g, ' ').slice(0, 1_200)}.` : '',
     'Inspect the repository only as needed to produce a concrete execution plan. Do not modify files or Git state.',
     'Return exactly one JSON object and no Markdown. Use this schema:',
-    '{"summary":"short plan rationale","tasks":[{"title":"short title","role":"owner|builder|specialist|reviewer|investigator","deliverable":"observable result","instructions":"specific bounded task","provider":"claude|codex","profileId":"optional profile id from the roster"}]}',
+    '{"summary":"short provider-neutral plan rationale","tasks":[{"title":"short title","role":"owner|builder|specialist|reviewer|investigator","deliverable":"observable result","instructions":"specific bounded task","provider":"claude|codex|cursor","assignmentReason":"two to four words","profileId":"optional profile id from the roster"}]}',
     'Create 1 to 4 independently executable tasks. Every task starts from the unchanged base branch in its own worktree and cannot see another task\'s edits.',
-    'Never create a review, documentation, or test task that depends on a sibling task. Put implementation-specific tests and documentation in the same task as that implementation.',
+    'Treat the provider list as an unordered allowed pool. Never assign roles from list position or assume Claude implements while Codex tests.',
+    'Honor explicit provider assignments in the objective. Otherwise choose saved profiles by specialty and generic providers without a fixed provider-role stereotype.',
+    'In Build mode, prefer one end-to-end owner for one cohesive objective. Use multiple workers only for genuinely independent deliverables.',
+    'Never create a review, documentation, or test task that depends on a sibling task. Put implementation-specific tests and documentation in the same task as that implementation; Relay performs post-integration verification separately.',
     'No two tasks may edit the same file, even for append-only documentation or tests. Assign each shared file to exactly one task.',
-    'Use each selected profile at most once. Keep responsibilities non-overlapping and make each task run its own proportionate validation.'
+    'Use each selected profile at most once. Keep responsibilities non-overlapping, make each task run its own proportionate validation, and explain every provider assignment concisely.'
   ].filter(Boolean).join('\n\n').slice(0, 4_000);
 }
 
@@ -160,4 +182,9 @@ function requiredString(value: unknown, max: number, error: string): string {
 
 function optionalString(value: unknown, max: number): string {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, max) : '';
+}
+
+function conciseReason(value: unknown, fallback: string): string {
+  const reason = optionalString(value, 80) || fallback;
+  return reason.split(/\s+/).slice(0, 4).join(' ');
 }

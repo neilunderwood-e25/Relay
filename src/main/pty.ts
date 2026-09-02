@@ -14,7 +14,7 @@ import type {
   TerminalSpawnRequest
 } from '../shared/contracts';
 import { personNameForSeed } from '../shared/agentIdentity';
-import { resolveExecutable } from './providers';
+import { resolveProviderExecutable } from './providers';
 import { providerAdapter } from './providerAdapters';
 import { TerminalBuffer } from './terminalBuffer';
 
@@ -86,7 +86,7 @@ export class PtyManager {
     if (!cwdInfo?.isDirectory()) throw new Error(`Working directory does not exist: ${cwd}`);
 
     const command = providerAdapter(request.provider).command;
-    const executable = await resolveExecutable(command);
+    const executable = await resolveProviderExecutable(request.provider);
     if (!executable) throw new Error(`${command} is not installed or is not available on PATH.`);
 
     const id = `${request.provider}-${randomUUID().slice(0, 8)}`;
@@ -316,7 +316,7 @@ export class PtyManager {
   }
 
   private validateSpawnRequest(request: TerminalSpawnRequest): void {
-    if (!request || !['claude', 'codex'].includes(request.provider)) throw new Error('Unsupported terminal provider.');
+    if (!request || !['claude', 'codex', 'cursor'].includes(request.provider)) throw new Error('Unsupported terminal provider.');
     if (typeof request.cwd !== 'string' || !request.cwd.trim()) throw new Error('A working directory is required.');
     if (request.name !== undefined && (typeof request.name !== 'string' || request.name.length > 80)) {
       throw new Error('Terminal names must be at most 80 characters.');
@@ -345,7 +345,8 @@ const TERMINAL_ENV_KEYS = new Set([
   'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
   'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
   'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
-  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'
+  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CURSOR_API_KEY', 'CURSOR_AUTH_TOKEN',
+  'CURSOR_API_ENDPOINT', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'
 ]);
 
 export function terminalEnvironment(source: NodeJS.ProcessEnv = process.env): Record<string, string> {

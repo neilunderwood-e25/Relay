@@ -4,6 +4,7 @@ export interface ProviderAdapter {
   id: ProviderId;
   label: string;
   command: string;
+  commandAliases?: string[];
   versionArgs: string[];
   orchestratorArgs(prompt: string, hiveRoot: string, model?: string | null): string[];
   planningArgs(prompt: string, model?: string | null): string[];
@@ -23,13 +24,7 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
       ...(model ? ['--model', model] : []),
       '--name', 'Relay Michael',
       '--add-dir', hiveRoot,
-      '--safe-mode',
-      '--restricted',
-      '--strict-mcp-config',
-      '--no-chrome',
-      '--permission-mode', 'acceptEdits',
-      '--tools', 'Read,Glob,Grep,Edit,Write',
-      '--allowedTools', 'Read,Glob,Grep,Edit,Write',
+      '--permission-mode', 'auto',
       '--append-system-prompt', prompt
     ],
     planningArgs: (prompt, model) => [
@@ -39,22 +34,17 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
     interactiveWorkerArgs: (model, nativeSessionId) => [
       ...(model ? ['--model', model] : []),
       ...(nativeSessionId ? ['--session-id', nativeSessionId] : []),
-      '--permission-mode', 'acceptEdits',
-      '--allowedTools', 'Bash,Read,Glob,Grep,Edit,Write',
-      '--no-chrome'
+      '--permission-mode', 'auto'
     ],
     resumeWorkerArgs: (model, nativeSessionId) => [
       ...(model ? ['--model', model] : []),
-      '--permission-mode', 'acceptEdits',
-      '--allowedTools', 'Bash,Read,Glob,Grep,Edit,Write',
-      '--no-chrome',
+      '--permission-mode', 'auto',
       ...(nativeSessionId ? ['--resume', nativeSessionId] : ['--continue'])
     ],
     workerArgs: (prompt, model) => [
       ...(model ? ['--model', model] : []),
       '--print',
-      '--permission-mode', 'acceptEdits',
-      '--allowedTools', 'Bash,Read,Glob,Grep,Edit,Write',
+      '--permission-mode', 'auto',
       '--verbose',
       '--output-format', 'stream-json',
       '--include-partial-messages',
@@ -65,8 +55,6 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
       ...(model ? ['--model', model] : []),
       '--print',
       '--permission-mode', 'dontAsk',
-      '--tools', 'Bash,Read,Glob,Grep',
-      '--allowedTools', 'Bash,Read,Glob,Grep',
       '--verbose',
       '--output-format', 'stream-json',
       '--include-partial-messages',
@@ -110,11 +98,72 @@ const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
       '--ask-for-approval', 'never', ...(model ? ['--model', model] : []),
       'exec', '--sandbox', 'read-only', '--color', 'never', '--json', '--ephemeral', prompt
     ]
+  },
+  cursor: {
+    id: 'cursor',
+    label: 'Cursor Agent',
+    command: 'agent',
+    commandAliases: ['cursor-agent'],
+    versionArgs: ['--version'],
+    orchestratorArgs: (prompt, hiveRoot, model) => [
+      ...(model ? ['--model', model] : []),
+      '--trust',
+      '--sandbox', 'enabled',
+      '--force',
+      '--add-dir', hiveRoot,
+      prompt
+    ],
+    planningArgs: (prompt, model) => [
+      ...(model ? ['--model', model] : []),
+      '--print',
+      '--output-format', 'stream-json',
+      '--stream-partial-output',
+      '--mode', 'plan',
+      '--trust',
+      '--sandbox', 'enabled',
+      '--force',
+      prompt
+    ],
+    interactiveWorkerArgs: (model, nativeSessionId) => [
+      ...(model ? ['--model', model] : []),
+      '--trust',
+      '--sandbox', 'enabled',
+      '--force',
+      ...(nativeSessionId ? ['--resume', nativeSessionId] : [])
+    ],
+    resumeWorkerArgs: (model, nativeSessionId) => [
+      ...(model ? ['--model', model] : []),
+      '--trust',
+      '--sandbox', 'enabled',
+      '--force',
+      ...(nativeSessionId ? ['--resume', nativeSessionId] : ['--continue'])
+    ],
+    workerArgs: (prompt, model) => [
+      ...(model ? ['--model', model] : []),
+      '--print',
+      '--output-format', 'stream-json',
+      '--stream-partial-output',
+      '--trust',
+      '--sandbox', 'enabled',
+      '--force',
+      prompt
+    ],
+    verificationArgs: (prompt, model) => [
+      ...(model ? ['--model', model] : []),
+      '--print',
+      '--output-format', 'stream-json',
+      '--stream-partial-output',
+      '--mode', 'ask',
+      '--trust',
+      '--sandbox', 'enabled',
+      '--force',
+      prompt
+    ]
   }
 };
 
 export function providerAdapters(): ProviderAdapter[] {
-  return [ADAPTERS.claude, ADAPTERS.codex];
+  return [ADAPTERS.claude, ADAPTERS.codex, ADAPTERS.cursor];
 }
 
 export function providerAdapter(id: ProviderId): ProviderAdapter {

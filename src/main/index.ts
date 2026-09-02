@@ -33,7 +33,8 @@ import type {
   WorktreeRemoveRequest
 } from '../shared/contracts';
 import {
-  DEFAULT_ORCHESTRATOR_NAME
+  DEFAULT_ORCHESTRATOR_NAME,
+  PROVIDER_IDS
 } from '../shared/contracts';
 import { IPC } from '../shared/ipc';
 import {
@@ -50,8 +51,12 @@ import { Orchestrator } from './orchestrator';
 import { OrchestratorActionBridge } from './orchestratorActions';
 import { prepareOrchestratorTerminal, prepareWorkerTerminal } from './orchestratorBootstrap';
 import { providerAdapter } from './providerAdapters';
-import { resolveNativeWorkerSessionId } from './providerSessions';
-import { detectProviders } from './providers';
+import {
+  createNativeWorkerSessionId,
+  readNativeWorkerResult,
+  resolveNativeWorkerSessionId
+} from './providerSessions';
+import { detectProviders, isProviderReady } from './providers';
 import { PtyManager } from './pty';
 import { normalizePreferences } from './preferences';
 import { SafetyBoundary } from './safety';
@@ -366,8 +371,8 @@ function validateOrchestratorInput(value: unknown): OrchestratorInputRequest {
   const text = request.text?.trim();
   if (!text || text.length > 32_768) throw new Error('Enter an instruction under 32 KB.');
   if (!['balanced', 'parallel', 'audit'].includes(request.strategy ?? '')) throw new Error('Choose a valid run mode.');
-  if (!Array.isArray(request.providers) || request.providers.length < 1 || request.providers.length > 2
-    || request.providers.some((provider) => !['claude', 'codex'].includes(provider))) {
+  if (!Array.isArray(request.providers) || request.providers.length < 1 || request.providers.length > 3
+    || request.providers.some((provider) => !PROVIDER_IDS.includes(provider))) {
     throw new Error('Choose at least one available CLI worker.');
   }
   if (!Number.isInteger(request.concurrency) || request.concurrency! < 1 || request.concurrency! > 4) {
@@ -456,6 +461,14 @@ function bootstrapWorkspace(config: WorkspaceConfig): void {
         return prepared.terminal;
       },
       resolveWorkerSessionId: resolveNativeWorkerSessionId,
+      createWorkerSessionId: createNativeWorkerSessionId,
+      readWorkerResult: (provider, cwd, nativeSessionId, startedAt, requiredMarker) => readNativeWorkerResult(
+        provider,
+        cwd,
+        nativeSessionId,
+        startedAt,
+        { requiredMarker }
+      ),
       onCoordinationMessage: (message) => nextHive.appendMessage(message),
       onUpdate: (snapshot) => {
         nextHive.syncOrchestrations(nextDatabase.listOrchestrations());
@@ -577,8 +590,9 @@ function registerIpcHandlers(): void {
       throw new Error('Restart Relay to change the Harness Home.');
     }
     const provider = (await detectProviders()).find(({ id }) => id === nextConfig.orchestratorProvider);
-    if (!provider?.available) {
-      throw new Error(`${provider?.label ?? nextConfig.orchestratorProvider} is not available.`);
+    if (!provider || !isProviderReady(provider)) {
+      throw new Error(provider?.authenticationError
+        ?? `${provider?.label ?? nextConfig.orchestratorProvider} is not available.`);
     }
     const previousConfig = workspaceConfig;
     workspaceConfig = nextConfig;

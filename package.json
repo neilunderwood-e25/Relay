@@ -20,7 +20,9 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest run",
     "test:cli": "RELAY_REAL_CLI=1 vitest run test/realCli.integration.test.ts test/realInteractiveCli.integration.test.ts --reporter=verbose",
+    "test:cli:all": "RELAY_REAL_CLI=1 RELAY_REAL_CURSOR=1 vitest run test/realCli.integration.test.ts test/realInteractiveCli.integration.test.ts --reporter=verbose",
     "test:e2e": "npm run typecheck && npm test && npm run build && npm run test:cli",
+    "test:e2e:all": "npm run typecheck && npm test && npm run build && npm run test:cli:all",
     "test:watch": "vitest",
     "postinstall": "electron-builder install-app-deps"
   },

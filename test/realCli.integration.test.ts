@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ProviderId } from '../src/shared/contracts';
 import { providerAdapter } from '../src/main/providerAdapters';
-import { resolveExecutable } from '../src/main/providers';
+import { resolveProviderExecutable } from '../src/main/providers';
 import { extractProviderResult } from '../src/shared/providerOutput';
 
 const runReal = process.env.RELAY_REAL_CLI === '1' ? describe : describe.skip;
@@ -16,9 +16,10 @@ afterEach(() => {
 });
 
 runReal('real CLI release smoke', () => {
-  for (const provider of ['claude', 'codex'] as const) {
-    it(`${provider} plans read-only and edits an isolated worktree`, async () => {
-      const executable = await resolveExecutable(providerAdapter(provider).command);
+  for (const provider of ['claude', 'codex', 'cursor'] as const) {
+    const test = provider === 'cursor' && process.env.RELAY_REAL_CURSOR !== '1' ? it.skip : it;
+    test(`${provider} plans read-only and edits an isolated worktree`, async () => {
+      const executable = await resolveProviderExecutable(provider);
       expect(executable, `${provider} must be installed for the release smoke`).toBeTruthy();
       const fixture = createWorktreeFixture(provider);
       const token = `RELAY_${provider.toUpperCase()}_READY`;
@@ -36,7 +37,7 @@ runReal('real CLI release smoke', () => {
       expect(git(fixture.worktree, ['status', '--porcelain'])).toBe('');
 
       const filename = `relay-${provider}-smoke.txt`;
-      const content = `${provider} worktree smoke passed`;
+      const content = `RELAY_${provider.toUpperCase()}_WORKTREE_SMOKE`;
       const worker = await runCli(
         executable!,
         providerAdapter(provider).workerArgs(

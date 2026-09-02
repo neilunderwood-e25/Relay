@@ -22,16 +22,23 @@ export const ORCHESTRATOR_MODELS: Record<ProviderId, readonly OrchestratorModelO
     { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
     { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' }
+  ],
+  cursor: [
+    { id: null, label: 'CLI default' }
   ]
 };
 
 export function isOrchestratorModel(provider: ProviderId, model: unknown): model is string | null {
-  return model === null || (
+  if (model === null) return true;
+  if (provider === 'cursor') {
+    return typeof model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/\[\],= -]{0,159}$/.test(model);
+  }
+  return (
     typeof model === 'string'
     && ORCHESTRATOR_MODELS[provider].some((option) => option.id === model)
   );
 }
 
 export function orchestratorModelLabel(provider: ProviderId, model: string | null): string {
-  return ORCHESTRATOR_MODELS[provider].find((option) => option.id === model)?.label ?? 'CLI default';
+  return ORCHESTRATOR_MODELS[provider].find((option) => option.id === model)?.label ?? model ?? 'CLI default';
 }

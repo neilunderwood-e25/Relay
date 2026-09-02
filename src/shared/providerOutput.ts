@@ -13,6 +13,7 @@ export class ProviderEventFormatter {
   private readonly tools = new Map<string, string>();
   private readonly emittedText = new Set<string>();
   private partialText = '';
+  private cursorText = '';
 
   constructor(private readonly provider: ProviderId) {}
 
@@ -35,7 +36,9 @@ export class ProviderEventFormatter {
     if (!clean) return '';
     const event = parseRecord(clean);
     if (!event) return `${line}\r\n`;
-    return this.provider === 'claude' ? this.formatClaude(event) : this.formatCodex(event);
+    if (this.provider === 'claude') return this.formatClaude(event);
+    if (this.provider === 'cursor') return this.formatCursor(event);
+    return this.formatCodex(event);
   }
 
   private formatClaude(event: Record<string, unknown>): string {
@@ -136,6 +139,46 @@ export class ProviderEventFormatter {
     }
   }
 
+  private formatCursor(event: Record<string, unknown>): string {
+    if (event.type === 'system' && event.subtype === 'init') {
+      const model = stringValue(event.model);
+      return statusLine('●', `Cursor connected${model ? ` · ${model}` : ''}`, DIM);
+    }
+    if (event.type === 'assistant') {
+      const message = recordValue(event.message);
+      const blocks = Array.isArray(message?.content) ? message.content : [];
+      return blocks.map((block) => {
+        const value = recordValue(block);
+        if (value?.type !== 'text') return '';
+        const text = stringValue(value.text);
+        this.cursorText += text;
+        return normalizeNewlines(text);
+      }).join('');
+    }
+    if (event.type === 'tool_call') {
+      const toolCall = recordValue(event.tool_call);
+      const entry = toolCall ? Object.entries(toolCall)[0] : undefined;
+      const label = entry ? describeCursorTool(entry[0], recordValue(entry[1])) : 'Tool';
+      const completed = event.subtype === 'completed';
+      return statusLine(completed ? '✓' : '→', `${label}${completed ? ' finished' : ''}`, completed ? GREEN : YELLOW);
+    }
+    if (event.type === 'result') {
+      if (event.is_error || event.subtype !== 'success') {
+        return statusLine('×', eventError(event) || 'Cursor failed', RED);
+      }
+      const result = stringValue(event.result);
+      if (result && result.trim() === this.cursorText.trim()) {
+        this.emittedText.add(result.trim());
+        this.cursorText = '';
+        return statusLine('✓', 'Completed', GREEN);
+      }
+      if (result && !this.emittedText.has(result.trim())) return this.text(result);
+      return statusLine('✓', 'Completed', GREEN);
+    }
+    if (event.type === 'error') return statusLine('×', eventError(event) || 'Cursor failed', RED);
+    return '';
+  }
+
   private text(value: string, dim = false): string {
     const clean = value.trim();
     if (!clean || this.emittedText.has(clean)) return '';
@@ -153,7 +196,7 @@ export function extractProviderResult(provider: ProviderId, output: string): str
     .filter((record): record is Record<string, unknown> => record !== null);
   if (records.length === 0) return output;
 
-  if (provider === 'claude') {
+  if (provider === 'claude' || provider === 'cursor') {
     const results = records
       .filter((event) => event.type === 'result')
       .map((event) => stringValue(event.result))
@@ -180,6 +223,20 @@ export function extractProviderResult(provider: ProviderId, output: string): str
 
   const errors = records.map(eventError).filter(Boolean);
   return errors.length > 0 ? errors.join('\n') : output;
+}
+
+function describeCursorTool(name: string, value: Record<string, unknown> | null): string {
+  const input = recordValue(value?.args) ?? recordValue(value?.input) ?? value;
+  const target = stringValue(input?.path)
+    || stringValue(input?.command)
+    || stringValue(input?.query)
+    || stringValue(input?.pattern);
+  const normalized = name.replace(/ToolCall$/, '');
+  const labels: Record<string, string> = {
+    read: 'Read', write: 'Write', strReplace: 'Edit', shell: 'Run', grep: 'Search', glob: 'Find', delete: 'Delete'
+  };
+  const label = labels[normalized] ?? normalized.replace(/([a-z])([A-Z])/g, '$1 $2');
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}${target ? ` ${truncate(target, 140)}` : ''}`;
 }
 
 function describeClaudeTool(name: string, input: Record<string, unknown> | null): string {

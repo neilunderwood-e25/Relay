@@ -75,7 +75,9 @@ describe('release readiness contract', () => {
     expect(main).toContain('cwd: activeHive.agentRoot');
     expect(safety).toContain('app.safety.denied');
     expect(safety).toContain('cannot supply CLI arguments');
-    expect(adapters).toContain("'--restricted'");
+    expect(adapters).toContain("'--permission-mode', 'auto'");
+    expect(adapters).not.toContain("'--safe-mode'");
+    expect(adapters).not.toContain("'--restricted'");
   });
 
   it('gates CLI workspace trust to Relay-managed directories before task delivery', () => {

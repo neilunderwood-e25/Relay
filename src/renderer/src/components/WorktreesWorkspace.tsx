@@ -2,8 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Add01Icon,
   Alert02Icon,
-  ChatGptIcon,
-  ClaudeIcon,
   CodeFolderIcon,
   Delete02Icon,
   FolderOpenIcon,
@@ -32,6 +30,7 @@ import { Icon } from './ui/Icon';
 import { Input } from './ui/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/Select';
 import { Tooltip } from './ui/app-tooltip';
+import { providerIcon, providerLabel, providerReady } from '../providerUi';
 
 export function WorktreesWorkspace({ cwd, providers, onChooseDirectory, onLaunch }: {
   cwd: string;
@@ -274,11 +273,11 @@ function WorktreeCard({ worktree, providers, busy, onLaunch, onRemove }: {
                 key={provider.id}
                 variant="secondary"
                 size="sm"
-                disabled={!provider.available || unavailable || busy}
+                disabled={!providerReady(provider) || unavailable || busy}
                 onClick={() => void onLaunch(provider.id, worktree.path, label)}
               >
-                <Icon icon={provider.id === 'claude' ? ClaudeIcon : ChatGptIcon} size={14} />
-                {provider.id === 'claude' ? 'Claude' : 'Codex'}
+                <Icon icon={providerIcon(provider.id)} size={14} />
+                {providerLabel(provider.id)}
               </Button>
             ))}
           </div>

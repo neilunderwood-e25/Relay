@@ -1,9 +1,10 @@
-export const PROVIDER_IDS = ['claude', 'codex'] as const;
+export const PROVIDER_IDS = ['claude', 'codex', 'cursor'] as const;
 export const DEFAULT_ORCHESTRATOR_NAME = 'Michael';
 
 export const DEFAULT_AGENT_NAMES = {
   claude: 'Claude',
-  codex: 'Codex'
+  codex: 'Codex',
+  cursor: 'Cursor'
 } as const;
 
 export type ProviderId = (typeof PROVIDER_IDS)[number];
@@ -16,6 +17,10 @@ export interface ProviderCapability {
   executablePath: string | null;
   version: string | null;
   error: string | null;
+  authenticated?: boolean | null;
+  authenticationError?: string | null;
+  models?: string[];
+  supportsAcp?: boolean;
 }
 
 export interface DatabaseHealth {
@@ -495,6 +500,8 @@ export interface OrchestrationRun {
   integrationStatus?: RunIntegrationStatus;
   integrationError?: string;
   verificationStatus?: VerificationStatus;
+  recommendedVerificationProvider?: ProviderId;
+  verificationAssignmentReason?: string;
   verificationProvider?: ProviderId;
   verificationTerminalId?: string;
   verificationSummary?: string;
@@ -552,6 +559,7 @@ export interface OrchestrationTask {
   avatarSeed?: string;
   model?: string;
   profileInstructions?: string;
+  assignmentReason?: string;
 }
 
 export interface OrchestrationSnapshot {

@@ -244,6 +244,13 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_agent_sessions_native ON agent_sessions(provider, native_session_id);
       CREATE INDEX idx_orchestration_tasks_session ON orchestration_tasks(agent_session_id);
     `);
+  },
+  (database) => {
+    database.exec(`
+      ALTER TABLE orchestration_runs ADD COLUMN recommended_verification_provider TEXT;
+      ALTER TABLE orchestration_runs ADD COLUMN verification_assignment_reason TEXT;
+      ALTER TABLE orchestration_tasks ADD COLUMN assignment_reason TEXT;
+    `);
   }
 ];
 
@@ -668,8 +675,9 @@ export class RelayDatabase {
          planning_model, planning_terminal_id, planning_summary, planning_error, planning_source,
          planning_providers_json, planning_profile_ids_json, parent_run_id, replan_context,
          synthesis_status, synthesis_provider, synthesis_model, synthesis_terminal_id,
-         final_summary, synthesis_error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         final_summary, synthesis_error, recommended_verification_provider,
+         verification_assignment_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         objective = excluded.objective,
         repo_root = excluded.repo_root,
@@ -704,7 +712,9 @@ export class RelayDatabase {
         synthesis_model = excluded.synthesis_model,
         synthesis_terminal_id = excluded.synthesis_terminal_id,
         final_summary = excluded.final_summary,
-        synthesis_error = excluded.synthesis_error
+        synthesis_error = excluded.synthesis_error,
+        recommended_verification_provider = excluded.recommended_verification_provider,
+        verification_assignment_reason = excluded.verification_assignment_reason
     `).run(
       run.id, run.objective, run.repoRoot, run.baseBranch, run.status, run.strategy, run.concurrency,
       run.createdAt, run.updatedAt, run.startedAt ?? null, run.completedAt ?? null, run.error ?? null,
@@ -716,7 +726,8 @@ export class RelayDatabase {
       run.planningSource ?? null, JSON.stringify(run.planningProviders ?? []),
       JSON.stringify(run.planningProfileIds ?? []), run.parentRunId ?? null, run.replanContext ?? null,
       run.synthesisStatus ?? 'idle', run.synthesisProvider ?? null, run.synthesisModel ?? null,
-      run.synthesisTerminalId ?? null, run.finalSummary ?? null, run.synthesisError ?? null
+      run.synthesisTerminalId ?? null, run.finalSummary ?? null, run.synthesisError ?? null,
+      run.recommendedVerificationProvider ?? null, run.verificationAssignmentReason ?? null
     );
   }
 
@@ -728,8 +739,8 @@ export class RelayDatabase {
          blocker,
          created_at, updated_at, started_at, completed_at, review_status, integration_status,
          integration_commit, integration_error, reviewed_at, integrated_at,
-         profile_id, agent_name, avatar_seed, model, profile_instructions)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         profile_id, agent_name, avatar_seed, model, profile_instructions, assignment_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         instructions = excluded.instructions,
@@ -759,7 +770,8 @@ export class RelayDatabase {
         agent_name = excluded.agent_name,
         avatar_seed = excluded.avatar_seed,
         model = excluded.model,
-        profile_instructions = excluded.profile_instructions
+        profile_instructions = excluded.profile_instructions,
+        assignment_reason = excluded.assignment_reason
     `).run(
       task.id, task.runId, task.ordinal, task.title, task.instructions, task.role, task.deliverable, task.provider,
       task.status, task.attempt, task.worktreeId ?? null, task.worktreePath ?? null,
@@ -771,7 +783,7 @@ export class RelayDatabase {
       task.integrationCommit ?? null, task.integrationError ?? null,
       task.reviewedAt ?? null, task.integratedAt ?? null,
       task.profileId ?? null, task.agentName ?? null, task.avatarSeed ?? null, task.model ?? null,
-      task.profileInstructions ?? null
+      task.profileInstructions ?? null, task.assignmentReason ?? null
     );
   }
 
@@ -894,7 +906,9 @@ const RUN_SELECT = `
          replan_context AS replanContext, synthesis_status AS synthesisStatus,
          synthesis_provider AS synthesisProvider, synthesis_model AS synthesisModel,
          synthesis_terminal_id AS synthesisTerminalId, final_summary AS finalSummary,
-         synthesis_error AS synthesisError
+         synthesis_error AS synthesisError,
+         recommended_verification_provider AS recommendedVerificationProvider,
+         verification_assignment_reason AS verificationAssignmentReason
   FROM orchestration_runs
 `;
 
@@ -908,7 +922,7 @@ const TASK_SELECT = `
          integration_commit AS integrationCommit, integration_error AS integrationError,
          reviewed_at AS reviewedAt, integrated_at AS integratedAt,
          profile_id AS profileId, agent_name AS agentName, avatar_seed AS avatarSeed, model,
-         profile_instructions AS profileInstructions
+         profile_instructions AS profileInstructions, assignment_reason AS assignmentReason
   FROM orchestration_tasks
 `;
 
@@ -930,6 +944,7 @@ type RunRow = Omit<
   | 'planningSummary' | 'planningError' | 'planningSource' | 'planningProviders'
   | 'planningProfileIds' | 'parentRunId' | 'replanContext' | 'synthesisProvider'
   | 'synthesisModel' | 'synthesisTerminalId' | 'finalSummary' | 'synthesisError'
+  | 'recommendedVerificationProvider' | 'verificationAssignmentReason'
 > & {
   startedAt: number | null;
   completedAt: number | null;
@@ -955,6 +970,8 @@ type RunRow = Omit<
   synthesisTerminalId: string | null;
   finalSummary: string | null;
   synthesisError: string | null;
+  recommendedVerificationProvider: OrchestrationRun['recommendedVerificationProvider'] | null;
+  verificationAssignmentReason: string | null;
 };
 
 type TaskRow = Omit<
@@ -962,7 +979,7 @@ type TaskRow = Omit<
   | 'worktreeId' | 'worktreePath' | 'branch' | 'terminalId' | 'agentSessionId' | 'summary' | 'error' | 'blocker'
   | 'startedAt' | 'completedAt' | 'integrationCommit' | 'integrationError'
   | 'reviewedAt' | 'integratedAt' | 'profileId' | 'agentName' | 'avatarSeed' | 'model'
-  | 'profileInstructions'
+  | 'profileInstructions' | 'assignmentReason'
 > & {
   worktreeId: string | null;
   worktreePath: string | null;
@@ -983,6 +1000,7 @@ type TaskRow = Omit<
   avatarSeed: string | null;
   model: string | null;
   profileInstructions: string | null;
+  assignmentReason: string | null;
 };
 
 type AgentSessionRow = Omit<
@@ -1030,7 +1048,9 @@ function runFromRow(row: RunRow): OrchestrationRun {
     synthesisModel: row.synthesisModel ?? undefined,
     synthesisTerminalId: row.synthesisTerminalId ?? undefined,
     finalSummary: row.finalSummary ?? undefined,
-    synthesisError: row.synthesisError ?? undefined
+    synthesisError: row.synthesisError ?? undefined,
+    recommendedVerificationProvider: row.recommendedVerificationProvider ?? undefined,
+    verificationAssignmentReason: row.verificationAssignmentReason ?? undefined
   };
 }
 
@@ -1065,7 +1085,8 @@ function taskFromRow(row: TaskRow): OrchestrationTask {
     agentName: row.agentName ?? undefined,
     avatarSeed: row.avatarSeed ?? undefined,
     model: row.model ?? undefined,
-    profileInstructions: row.profileInstructions ?? undefined
+    profileInstructions: row.profileInstructions ?? undefined,
+    assignmentReason: row.assignmentReason ?? undefined
   };
 }
 

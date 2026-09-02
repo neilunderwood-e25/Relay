@@ -53,4 +53,20 @@ describe('provider event output', () => {
   it('leaves ordinary terminal output intact when no event stream was produced', () => {
     expect(extractProviderResult('claude', 'Authentication failed')).toBe('Authentication failed');
   });
+
+  it('projects Cursor stream-json activity and extracts its durable result', () => {
+    const events = [
+      { type: 'system', subtype: 'init', model: 'Auto', session_id: 'cursor-session' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Updating the file.' }] } },
+      { type: 'tool_call', subtype: 'started', tool_call: { writeToolCall: { args: { path: 'src/app.ts' } } } },
+      { type: 'tool_call', subtype: 'completed', tool_call: { writeToolCall: { args: { path: 'src/app.ts' }, result: { success: {} } } } },
+      { type: 'result', subtype: 'success', result: 'Cursor finished.', session_id: 'cursor-session' }
+    ].map((event) => JSON.stringify(event)).join('\n') + '\n';
+    const formatted = new ProviderEventFormatter('cursor').write(events);
+
+    expect(formatted).toContain('Cursor connected · Auto');
+    expect(formatted).toContain('Write src/app.ts');
+    expect(formatted).toContain('Cursor finished.');
+    expect(extractProviderResult('cursor', events)).toBe('Cursor finished.');
+  });
 });

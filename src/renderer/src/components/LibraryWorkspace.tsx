@@ -2,8 +2,6 @@ import { useState } from 'react';
 import {
   Add01Icon,
   Alert02Icon,
-  ChatGptIcon,
-  ClaudeIcon,
   Delete02Icon,
   Edit02Icon,
   Layers01Icon,
@@ -18,7 +16,6 @@ import type {
   ProviderCapability,
   ProviderId
 } from '../../../shared/contracts';
-import { ORCHESTRATOR_MODELS } from '../../../shared/orchestratorModels';
 import { AgentAvatar } from './AgentAvatar';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
@@ -30,6 +27,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Tabs, TabsList, TabsTrigger } from './ui/Tabs';
 import { Textarea } from './ui/textarea';
 import { Tooltip } from './ui/app-tooltip';
+import {
+  providerIcon,
+  providerLabel,
+  providerModelLabel,
+  providerModelOptions,
+  providerReady,
+  providerStatusLabel
+} from '../providerUi';
 import {
   Dialog,
   DialogContent,
@@ -162,8 +167,8 @@ export function LibraryWorkspace({ profiles, templates, providers, onChange }: {
               </CardHeader>
               <CardContent className="library-card-content">
                 <span className={`library-provider ${profile.provider}`}>
-                  <Icon icon={profile.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={14} />
-                  {profile.provider === 'claude' ? 'Claude' : 'Codex'}
+                  <Icon icon={providerIcon(profile.provider)} size={14} />
+                  {providerLabel(profile.provider)}
                 </span>
                 <p>{profile.instructions || 'General coding agent'}</p>
                 <div className="library-card-actions">
@@ -204,7 +209,7 @@ export function LibraryWorkspace({ profiles, templates, providers, onChange }: {
         </div>
       )}
 
-      <ProfileDialog draft={profileDraft} profiles={profiles} busy={busy} onChange={setProfileDraft} onSave={saveProfile} />
+      <ProfileDialog draft={profileDraft} profiles={profiles} providers={providers} busy={busy} onChange={setProfileDraft} onSave={saveProfile} />
       <TemplateDialog draft={templateDraft} profiles={profiles} busy={busy} onChange={setTemplateDraft} onSave={saveTemplate} />
       <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => { if (!open && !busy) setDeleteTarget(null); }}>
         <DialogContent className="confirm-dialog">
@@ -216,9 +221,10 @@ export function LibraryWorkspace({ profiles, templates, providers, onChange }: {
   );
 }
 
-function ProfileDialog({ draft, profiles, busy, onChange, onSave }: {
+function ProfileDialog({ draft, profiles, providers, busy, onChange, onSave }: {
   draft: AgentProfileSaveRequest | null;
   profiles: AgentProfile[];
+  providers: ProviderCapability[];
   busy: boolean;
   onChange: (draft: AgentProfileSaveRequest | null) => void;
   onSave: () => Promise<void>;
@@ -226,6 +232,8 @@ function ProfileDialog({ draft, profiles, busy, onChange, onSave }: {
   if (!draft) return <></>;
   const seed = draft.avatarSeed || draft.id || `profile-preview-${profiles.length}`;
   const provider = draft.provider;
+  const selectedCapability = providers.find(({ id }) => id === provider);
+  const modelOptions = providerModelOptions(provider, selectedCapability);
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !busy) onChange(null); }}>
       <DialogContent className="extension-dialog">
@@ -233,8 +241,8 @@ function ProfileDialog({ draft, profiles, busy, onChange, onSave }: {
         <div className="extension-form">
           <div className="profile-name-row"><AgentAvatar seed={seed} name={draft.name || 'Agent'} className="profile-dialog-avatar" /><Input aria-label="Agent name" placeholder="Agent name" value={draft.name} maxLength={32} onChange={(event) => onChange({ ...draft, name: event.target.value })} /></div>
           <div className="extension-field-grid">
-            <label><span>Engine</span><Select value={provider} onValueChange={(value) => onChange({ ...draft, provider: value as ProviderId, model: null })}><SelectTrigger aria-label="Agent engine"><SelectValue>{provider === 'claude' ? 'Claude' : 'Codex'}</SelectValue></SelectTrigger><SelectContent><SelectItem value="claude">Claude</SelectItem><SelectItem value="codex">Codex</SelectItem></SelectContent></Select></label>
-            <label><span>Model</span><Select value={draft.model ?? DEFAULT_MODEL_VALUE} onValueChange={(value) => onChange({ ...draft, model: value === DEFAULT_MODEL_VALUE ? null : value })}><SelectTrigger aria-label="Agent model"><SelectValue>{modelLabel(provider, draft.model)}</SelectValue></SelectTrigger><SelectContent>{ORCHESTRATOR_MODELS[provider].map((option) => <SelectItem key={option.id ?? DEFAULT_MODEL_VALUE} value={option.id ?? DEFAULT_MODEL_VALUE}>{option.label}</SelectItem>)}</SelectContent></Select></label>
+            <label><span>Engine</span><Select value={provider} onValueChange={(value) => onChange({ ...draft, provider: value as ProviderId, model: null })}><SelectTrigger aria-label="Agent engine"><SelectValue>{providerLabel(provider)}</SelectValue></SelectTrigger><SelectContent>{providers.map((candidate) => <SelectItem key={candidate.id} value={candidate.id} disabled={!providerReady(candidate)}><span className="provider-option"><span className={`provider-option-icon ${candidate.id}`}><Icon icon={providerIcon(candidate.id)} size={14} /></span><span>{providerLabel(candidate.id)}</span>{!providerReady(candidate) && <small>{providerStatusLabel(candidate)}</small>}</span></SelectItem>)}</SelectContent></Select></label>
+            <label><span>Model</span><Select value={draft.model ?? DEFAULT_MODEL_VALUE} onValueChange={(value) => onChange({ ...draft, model: value === DEFAULT_MODEL_VALUE ? null : value })}><SelectTrigger aria-label="Agent model"><SelectValue>{providerModelLabel(provider, draft.model)}</SelectValue></SelectTrigger><SelectContent>{modelOptions.map((option) => <SelectItem key={option.id ?? DEFAULT_MODEL_VALUE} value={option.id ?? DEFAULT_MODEL_VALUE}>{option.label}</SelectItem>)}</SelectContent></Select></label>
           </div>
           <label className="extension-text-field"><span>Instructions</span><Textarea aria-label="Agent instructions" placeholder="Frontend specialist, test engineer…" value={draft.instructions ?? ''} maxLength={2_000} onChange={(event) => onChange({ ...draft, instructions: event.target.value })} /></label>
         </div>
@@ -283,7 +291,7 @@ function LibraryEmpty({ icon, label, onClick }: { icon: typeof Layers01Icon; lab
 }
 
 function newProfile(providers: ProviderCapability[]): AgentProfileSaveRequest {
-  return { name: '', provider: providers.find(({ available }) => available)?.id ?? 'claude', model: null, instructions: '', enabled: true };
+  return { name: '', provider: providers.find(providerReady)?.id ?? 'claude', model: null, instructions: '', enabled: true };
 }
 
 function newTemplate(): OrchestrationTemplateSaveRequest {
@@ -296,10 +304,6 @@ function upsert<T extends { id: string }>(items: T[], item: T): T[] {
 
 function strategyLabel(strategy: OrchestrationStrategy): string {
   return strategy === 'parallel' ? 'Split' : strategy === 'audit' ? 'Audit' : 'Build';
-}
-
-function modelLabel(provider: ProviderId, model: string | null | undefined): string {
-  return ORCHESTRATOR_MODELS[provider].find((option) => option.id === (model ?? null))?.label ?? 'CLI default';
 }
 
 function messageOf(cause: unknown): string {

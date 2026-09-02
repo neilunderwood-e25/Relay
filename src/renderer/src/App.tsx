@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Cancel01Icon,
-  ChatGptIcon,
-  ClaudeIcon,
   FolderGitIcon,
   RefreshIcon
 } from '@hugeicons/core-free-icons';
@@ -28,6 +26,7 @@ import { Tooltip } from './components/ui/app-tooltip';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { useTerminalStore } from './store/terminals';
 import relayLogo from './assets/relay-logo.svg';
+import { providerCliLabel, providerIcon, providerReady } from './providerUi';
 
 type LoadState =
   | { status: 'loading' }
@@ -201,9 +200,7 @@ export function App(): React.JSX.Element {
     );
   }
 
-  const runningCount = terminals.filter(
-    (terminal) => terminal.role !== 'orchestrator' && terminal.status !== 'exited'
-  ).length;
+  const runningCount = terminals.filter((terminal) => terminal.status !== 'exited').length;
   const orchestratorTerminal = terminals
     .filter((terminal) => terminal.role === 'orchestrator')
     .sort((left, right) => right.createdAt - left.createdAt)[0] ?? null;
@@ -301,6 +298,7 @@ export function App(): React.JSX.Element {
             ) : (
               <SettingsWorkspace
                 snapshot={snapshot}
+                onRefreshProviders={refreshProviders}
                 onPreferencesChange={(preferences) => {
                   setState({ status: 'ready', snapshot: { ...snapshot, preferences } });
                 }}
@@ -353,16 +351,16 @@ function ProviderButton({ provider, launching, disabled, onClick }: {
 }): React.JSX.Element {
   const label = DEFAULT_AGENT_NAMES[provider.id];
   return (
-    <Tooltip content={`${label} CLI`}>
+    <Tooltip content={providerCliLabel(provider.id)}>
       <span className="disabled-tooltip-target">
         <Button
           variant="secondary"
           size="sm"
-          disabled={!provider.available || disabled}
+          disabled={!providerReady(provider) || disabled}
           onClick={onClick}
           className={`worker-button worker-${provider.id}`}
         >
-          <Icon icon={provider.id === 'claude' ? ClaudeIcon : ChatGptIcon} size={15} />
+          <Icon icon={providerIcon(provider.id)} size={15} />
           {launching ? 'Starting' : label}
         </Button>
       </span>

@@ -178,7 +178,7 @@ export class HiveManager {
           `# ${this.orchestratorName}`,
           '',
           '- Role: Relay orchestrator',
-          `- Engine: ${this.orchestratorProvider === 'claude' ? 'Claude Code' : 'Codex CLI'}`,
+          `- Engine: ${providerEngineLabel(this.orchestratorProvider)}`,
           `- Model: ${orchestratorModelLabel(this.orchestratorProvider, this.orchestratorModel)}`,
           '- Owns: decomposition, assignment, task tracking, integration decisions, and final QA',
           '- Delegates implementation to CLI workers in isolated Git worktrees',
@@ -216,7 +216,7 @@ export class HiveManager {
         `# ${this.orchestratorName}`,
         '',
         '- Role: Relay orchestrator',
-        `- Engine: ${this.orchestratorProvider === 'claude' ? 'Claude Code' : 'Codex CLI'}`,
+        `- Engine: ${providerEngineLabel(this.orchestratorProvider)}`,
         `- Model: ${orchestratorModelLabel(this.orchestratorProvider, this.orchestratorModel)}`,
         '- Owns: decomposition, assignment, task tracking, integration decisions, and final QA',
         '- Delegates implementation to CLI workers in isolated Git worktrees',
@@ -556,6 +556,14 @@ export class HiveManager {
       directory: '',
       lastSeen: Date.now()
     };
+    registry.agents.cursor = {
+      id: 'cursor',
+      name: 'Cursor',
+      role: 'CLI worker',
+      status: 'idle',
+      directory: '',
+      lastSeen: Date.now()
+    };
     this.atomicWriteJson(path, registry);
   }
 
@@ -635,6 +643,12 @@ export class HiveManager {
       return fallback;
     }
   }
+}
+
+function providerEngineLabel(provider: ProviderId): string {
+  if (provider === 'claude') return 'Claude Code';
+  if (provider === 'codex') return 'Codex CLI';
+  return 'Cursor Agent';
 }
 
 function ledgerStatus(status: OrchestrationTaskStatus): HiveTaskCard['status'] {

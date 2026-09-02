@@ -1,14 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight01Icon,
-  ChatGptIcon,
-  ClaudeIcon,
   Folder01Icon,
   FolderGitIcon
 } from '@hugeicons/core-free-icons';
 import type { AppSnapshot, ProviderId } from '../../../shared/contracts';
-import { DEFAULT_AGENT_NAMES } from '../../../shared/contracts';
-import { ORCHESTRATOR_MODELS } from '../../../shared/orchestratorModels';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
 import { Alert, AlertDescription } from './ui/alert';
@@ -16,6 +12,15 @@ import { Card, CardContent, CardFooter, CardHeader } from './ui/Card';
 import { Icon } from './ui/Icon';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/Select';
 import { AgentAvatar } from './AgentAvatar';
+import {
+  providerIcon,
+  providerLabel,
+  providerModelLabel,
+  providerModelOptions,
+  providerReady,
+  providerStatusDetail,
+  providerStatusLabel
+} from '../providerUi';
 
 const DEFAULT_MODEL_VALUE = '__cli_default__';
 
@@ -33,17 +38,22 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
   const [error, setError] = useState<string | null>(null);
 
   const availableProviders = useMemo(
-    () => snapshot.providers.filter((candidate) => candidate.available),
+    () => snapshot.providers.filter(providerReady),
     [snapshot.providers]
   );
   const selectedProvider = snapshot.providers.find((candidate) => candidate.id === provider);
 
   useEffect(() => {
-    if (!selectedProvider?.available && availableProviders[0]) {
+    if ((!selectedProvider || !providerReady(selectedProvider)) && availableProviders[0]) {
       setProvider(availableProviders[0].id);
       setModel(null);
     }
-  }, [availableProviders, selectedProvider?.available]);
+  }, [availableProviders, selectedProvider]);
+
+  const modelOptions = useMemo(
+    () => providerModelOptions(provider, selectedProvider),
+    [provider, selectedProvider]
+  );
 
   const choose = async (purpose: 'home' | 'project'): Promise<void> => {
     setError(null);
@@ -58,7 +68,7 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
   };
 
   const finish = async (): Promise<void> => {
-    if (!harnessHome || !projectPath || !selectedProvider?.available) return;
+    if (!harnessHome || !projectPath || !selectedProvider || !providerReady(selectedProvider)) return;
     setBusy(true);
     setError(null);
     try {
@@ -130,14 +140,18 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
                 >
                   <SelectTrigger aria-label="Orchestrator engine">
                     <span className={`startup-provider-mark ${provider}`}>
-                      <Icon icon={provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={15} />
+                      <Icon icon={providerIcon(provider)} size={15} />
                     </span>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     {snapshot.providers.map((candidate) => (
-                      <SelectItem key={candidate.id} value={candidate.id} disabled={!candidate.available}>
-                        {DEFAULT_AGENT_NAMES[candidate.id]}{candidate.available ? '' : ' · Missing'}
+                      <SelectItem key={candidate.id} value={candidate.id} disabled={!providerReady(candidate)}>
+                        <span className="provider-option">
+                          <span className={`provider-option-icon ${candidate.id}`}><Icon icon={providerIcon(candidate.id)} size={14} /></span>
+                          <span>{providerLabel(candidate.id)}</span>
+                          {!providerReady(candidate) && <small>{providerStatusLabel(candidate)}</small>}
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -151,9 +165,9 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
                   value={model ?? DEFAULT_MODEL_VALUE}
                   onValueChange={(value) => setModel(value === DEFAULT_MODEL_VALUE ? null : value)}
                 >
-                  <SelectTrigger aria-label="Orchestrator model"><SelectValue /></SelectTrigger>
+                  <SelectTrigger aria-label="Orchestrator model"><SelectValue>{providerModelLabel(provider, model)}</SelectValue></SelectTrigger>
                   <SelectContent>
-                    {ORCHESTRATOR_MODELS[provider].map((option) => (
+                    {modelOptions.map((option) => (
                       <SelectItem key={option.id ?? DEFAULT_MODEL_VALUE} value={option.id ?? DEFAULT_MODEL_VALUE}>
                         {option.label}
                       </SelectItem>
@@ -166,17 +180,17 @@ export function StartupWizard({ snapshot, onComplete }: StartupWizardProps): Rea
 
           {error && <Alert variant="destructive" className="startup-error"><AlertDescription>{error}</AlertDescription></Alert>}
           {availableProviders.length === 0 && !error && (
-            <Alert variant="destructive" className="startup-error"><AlertDescription>Install Claude or Codex CLI.</AlertDescription></Alert>
+            <Alert variant="destructive" className="startup-error"><AlertDescription>Install or sign in to a supported CLI.</AlertDescription></Alert>
           )}
         </CardContent>
 
         <CardFooter className="startup-card-footer">
-          <span className={`startup-engine-status ${selectedProvider?.available ? 'ready' : ''}`}>
-            <span />{selectedProvider?.available ? selectedProvider.version ?? 'CLI ready' : 'CLI missing'}
+          <span className={`startup-engine-status ${selectedProvider && providerReady(selectedProvider) ? 'ready' : ''}`}>
+            <span />{selectedProvider ? providerStatusDetail(selectedProvider) : 'CLI unavailable'}
           </span>
           <Button
             className="startup-next"
-            disabled={!harnessHome || !projectPath || !selectedProvider?.available || busy}
+            disabled={!harnessHome || !projectPath || !selectedProvider || !providerReady(selectedProvider) || busy}
             onClick={() => void finish()}
           >
             {busy ? 'Opening' : 'Open Relay'}

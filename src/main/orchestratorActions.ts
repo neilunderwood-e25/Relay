@@ -1,10 +1,11 @@
 import type { Logger } from 'pino';
-import type {
-  OrchestratorActionKind,
-  OrchestratorActionRequest,
-  OrchestratorActionResult,
-  OrchestrationStrategy,
-  ProviderId
+import {
+  PROVIDER_IDS,
+  type OrchestratorActionKind,
+  type OrchestratorActionRequest,
+  type OrchestratorActionResult,
+  type OrchestrationStrategy,
+  type ProviderId
 } from '../shared/contracts';
 import type { ClaimedControlAction } from './hive';
 
@@ -19,7 +20,7 @@ const ACTION_KINDS: OrchestratorActionKind[] = [
   'run.cleanup'
 ];
 const STRATEGIES: OrchestrationStrategy[] = ['balanced', 'parallel', 'audit'];
-const PROVIDERS: ProviderId[] = ['claude', 'codex'];
+const PROVIDERS: readonly ProviderId[] = PROVIDER_IDS;
 
 interface ActionHive {
   claimControlActions(): ClaimedControlAction[];
@@ -134,9 +135,9 @@ export function validateOrchestratorAction(value: unknown): OrchestratorActionRe
     if (!STRATEGIES.includes(value.strategy as OrchestrationStrategy)) {
       throw new Error('run.create requires a valid strategy.');
     }
-    if (!Array.isArray(value.providers) || value.providers.length < 1 || value.providers.length > 2
+    if (!Array.isArray(value.providers) || value.providers.length < 1 || value.providers.length > 3
       || value.providers.some((provider) => !PROVIDERS.includes(provider as ProviderId))) {
-      throw new Error('run.create requires one or two supported providers.');
+      throw new Error('run.create requires one to three supported providers.');
     }
     if (!Number.isInteger(value.concurrency) || (value.concurrency as number) < 1 || (value.concurrency as number) > 4) {
       throw new Error('run.create concurrency must be between 1 and 4.');

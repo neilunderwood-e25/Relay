@@ -2,15 +2,15 @@ import type { Logger } from 'pino';
 import * as nodePty from 'node-pty';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PtyManager, terminalEnvironment } from '../src/main/pty';
-import { resolveExecutable } from '../src/main/providers';
+import { resolveProviderExecutable } from '../src/main/providers';
 
 vi.mock('node-pty', () => ({ spawn: vi.fn() }));
-vi.mock('../src/main/providers', () => ({ resolveExecutable: vi.fn() }));
+vi.mock('../src/main/providers', () => ({ resolveProviderExecutable: vi.fn() }));
 
 describe('PtyManager orchestrator session', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(resolveExecutable).mockResolvedValue('/usr/bin/claude');
+    vi.mocked(resolveProviderExecutable).mockResolvedValue('/usr/bin/claude');
     vi.mocked(nodePty.spawn).mockReturnValue({
       pid: 4242,
       onData: vi.fn(),

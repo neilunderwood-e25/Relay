@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity01Icon,
   Alert02Icon,
-  ChatGptIcon,
-  ClaudeIcon,
   Folder01Icon,
   FolderGitIcon,
   RefreshIcon,
@@ -25,12 +23,21 @@ import { Icon } from './ui/Icon';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/Select';
 import { Separator } from './ui/Separator';
 import { Tooltip } from './ui/app-tooltip';
+import {
+  providerIcon,
+  providerLabel,
+  providerReady,
+  providerStatusDetail,
+  providerStatusLabel,
+  providerState
+} from '../providerUi';
 
 const AUTO_PROVIDER = '__auto__';
 
-export function SettingsWorkspace({ snapshot, onPreferencesChange }: {
+export function SettingsWorkspace({ snapshot, onPreferencesChange, onRefreshProviders }: {
   snapshot: AppSnapshot;
   onPreferencesChange: (preferences: RelayPreferences) => void;
+  onRefreshProviders: () => Promise<void>;
 }): React.JSX.Element {
   const [draft, setDraft] = useState(snapshot.preferences);
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null);
@@ -54,6 +61,22 @@ export function SettingsWorkspace({ snapshot, onPreferencesChange }: {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const refreshAll = async (): Promise<void> => {
+    setBusy('refresh');
+    setError(null);
+    try {
+      const [, nextDiagnostics] = await Promise.all([
+        onRefreshProviders(),
+        window.relay.getDiagnostics()
+      ]);
+      setDiagnostics(nextDiagnostics);
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const save = async (): Promise<void> => {
     setBusy('save');
@@ -93,7 +116,7 @@ export function SettingsWorkspace({ snapshot, onPreferencesChange }: {
       <header className="dashboard-header operations-header">
         <div className="dashboard-title"><h1>Settings</h1></div>
         <Tooltip content="Refresh health">
-          <Button variant="ghost" size="icon" aria-label="Refresh health" disabled={busy !== null} onClick={() => void refresh()}>
+          <Button variant="ghost" size="icon" aria-label="Refresh health" disabled={busy !== null} onClick={() => void refreshAll()}>
             <Icon icon={RefreshIcon} size={16} />
           </Button>
         </Tooltip>
@@ -137,8 +160,8 @@ export function SettingsWorkspace({ snapshot, onPreferencesChange }: {
                 <SelectContent>
                   <SelectItem value={AUTO_PROVIDER}>Automatic</SelectItem>
                   {snapshot.providers.map((provider) => (
-                    <SelectItem key={provider.id} value={provider.id} disabled={!provider.available}>
-                      {provider.id === 'claude' ? 'Claude' : 'Codex'}
+                    <SelectItem key={provider.id} value={provider.id} disabled={!providerReady(provider)}>
+                      {providerLabel(provider.id)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -178,9 +201,14 @@ export function SettingsWorkspace({ snapshot, onPreferencesChange }: {
             <div className="provider-health-list">
               {snapshot.providers.map((provider) => (
                 <div key={provider.id}>
-                  <span className={`provider-health-icon ${provider.id}`}><Icon icon={provider.id === 'claude' ? ClaudeIcon : ChatGptIcon} size={14} /></span>
-                  <strong>{provider.id === 'claude' ? 'Claude' : 'Codex'}</strong>
-                  <Badge variant={provider.available ? 'default' : 'secondary'}>{provider.available ? 'Ready' : 'Missing'}</Badge>
+                  <span className={`provider-health-icon ${provider.id}`}><Icon icon={providerIcon(provider.id)} size={14} /></span>
+                  <span className="provider-health-copy">
+                    <strong>{providerLabel(provider.id)}</strong>
+                    <small title={providerStatusDetail(provider)}>{providerStatusDetail(provider)}</small>
+                  </span>
+                  <Badge variant={providerState(provider) === 'error' ? 'destructive' : providerReady(provider) ? 'default' : 'secondary'}>
+                    {providerStatusLabel(provider)}
+                  </Badge>
                 </div>
               ))}
             </div>
@@ -219,10 +247,6 @@ function formatUptime(milliseconds: number): string {
 
 function strategyLabel(strategy: OrchestrationStrategy): string {
   return strategy === 'parallel' ? 'Split' : strategy === 'audit' ? 'Audit' : 'Build';
-}
-
-function providerLabel(provider: ProviderId | null): string {
-  return provider === 'claude' ? 'Claude' : provider === 'codex' ? 'Codex' : 'Automatic';
 }
 
 function messageOf(cause: unknown): string {

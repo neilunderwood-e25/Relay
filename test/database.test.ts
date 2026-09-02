@@ -26,7 +26,7 @@ describe('RelayDatabase', () => {
 
     expect(database.health()).toMatchObject({
       open: true,
-      schemaVersion: 9
+      schemaVersion: 10
     });
 
     database.close();
@@ -98,6 +98,9 @@ describe('RelayDatabase', () => {
 
     const legacy = new SqliteDatabase(database.path);
     legacy.exec(`
+      ALTER TABLE orchestration_runs DROP COLUMN recommended_verification_provider;
+      ALTER TABLE orchestration_runs DROP COLUMN verification_assignment_reason;
+      ALTER TABLE orchestration_tasks DROP COLUMN assignment_reason;
       DROP INDEX idx_orchestration_tasks_session;
       DROP INDEX idx_agent_sessions_native;
       DROP INDEX idx_agent_sessions_terminal;
@@ -109,7 +112,7 @@ describe('RelayDatabase', () => {
     legacy.close();
 
     database.open();
-    expect(database.health().schemaVersion).toBe(9);
+    expect(database.health().schemaVersion).toBe(10);
     expect(database.getOrchestration('legacy-run')).toMatchObject({
       run: { objective: 'Preserve this run' },
       tasks: [],
@@ -225,6 +228,8 @@ describe('RelayDatabase', () => {
         synthesisModel: 'claude-opus-4-1',
         synthesisTerminalId: 'terminal-outcome',
         finalSummary: 'The replacement completed successfully.',
+        recommendedVerificationProvider: 'claude',
+        verificationAssignmentReason: 'Independent check',
         createdAt: 100,
         updatedAt: 100
       },
@@ -241,6 +246,7 @@ describe('RelayDatabase', () => {
         attempt: 0,
         agentSessionId: 'session-1',
         blocker: 'Waiting for an SDK.',
+        assignmentReason: 'Explicit request',
         createdAt: 100,
         updatedAt: 100
       }],
@@ -274,13 +280,16 @@ describe('RelayDatabase', () => {
       planningProfileIds: ['profile-frontend'],
       parentRunId: 'run-original',
       synthesisStatus: 'completed',
-      finalSummary: 'The replacement completed successfully.'
+      finalSummary: 'The replacement completed successfully.',
+      recommendedVerificationProvider: 'claude',
+      verificationAssignmentReason: 'Independent check'
     });
     expect(snapshot?.tasks[0]).toMatchObject({
       role: 'builder',
       deliverable: 'Working feature',
       agentSessionId: 'session-1',
-      blocker: 'Waiting for an SDK.'
+      blocker: 'Waiting for an SDK.',
+      assignmentReason: 'Explicit request'
     });
     expect(snapshot?.sessions).toMatchObject([{
       id: 'session-1',

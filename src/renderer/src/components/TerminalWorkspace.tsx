@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ChatGptIcon,
-  ClaudeIcon,
   Delete02Icon,
   PlugZapIcon,
   RefreshCwIcon,
@@ -20,6 +18,7 @@ import { Card, CardContent, CardFooter, CardHeader } from './ui/Card';
 import { Icon } from './ui/Icon';
 import { Input } from './ui/Input';
 import { Tooltip } from './ui/app-tooltip';
+import { providerIcon, providerLabel } from '../providerUi';
 
 export function TerminalWorkspace(): React.JSX.Element {
   const allTerminals = useTerminalStore((state) => state.terminals);
@@ -69,7 +68,7 @@ export function TerminalWorkspace(): React.JSX.Element {
   const sessionTerminalIds = new Set(sessions.flatMap(({ terminalId }) => terminalId ? [terminalId] : []));
   const standalone = allTerminals.filter(({ id }) => !sessionTerminalIds.has(id));
   const selectedTerminalIsInteractive = selectedTerminal
-    ? (selectedTerminal.role ?? 'worker') === 'worker' && (selectedTerminal.outputMode ?? 'terminal') === 'terminal'
+    ? (selectedTerminal.outputMode ?? 'terminal') === 'terminal'
     : false;
   const canRestart = Boolean(
     selectedSession &&
@@ -178,7 +177,7 @@ export function TerminalWorkspace(): React.JSX.Element {
               <span className="agent-session-copy">
                 <strong>{session.agentName}</strong>
                 <small>
-                  <Icon icon={session.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={12} />
+                  <Icon icon={providerIcon(session.provider)} size={12} />
                   {sessionStatusLabel(session.status)}
                 </small>
               </span>
@@ -219,7 +218,7 @@ export function TerminalWorkspace(): React.JSX.Element {
               <div>
                 <strong>{selectedSession.agentName}</strong>
                 <span>
-                  <Icon icon={selectedSession.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={12} />
+                  <Icon icon={providerIcon(selectedSession.provider)} size={12} />
                   {DEFAULT_AGENT_NAMES[selectedSession.provider]}
                 </span>
               </div>
@@ -229,11 +228,16 @@ export function TerminalWorkspace(): React.JSX.Element {
             </div>
           ) : selectedTerminal ? (
             <div className="agent-console-identity">
-              <span className="standalone-terminal-icon"><Icon icon={SquareTerminalIcon} size={15} /></span>
+              <span className={`standalone-terminal-icon provider ${selectedTerminal.provider}`}>
+                <Icon icon={providerIcon(selectedTerminal.provider)} size={15} />
+              </span>
               <div>
                 <strong>{selectedTerminal.name}</strong>
-                <span>{selectedTerminalIsInteractive ? 'Terminal' : 'Read only'}</span>
+                <span>{providerLabel(selectedTerminal.provider)} · {terminalAccessLabel(selectedTerminal)}</span>
               </div>
+              <Badge variant={selectedTerminal.status === 'running' ? 'default' : 'secondary'}>
+                {statusLabel(selectedTerminal.status)}
+              </Badge>
             </div>
           ) : (
             <span className="terminal-label"><Icon icon={SquareTerminalIcon} size={15} /> Console</span>
@@ -324,11 +328,11 @@ export function TerminalWorkspace(): React.JSX.Element {
           {selectedTerminal ? (
             <>
               <span className={`provider-name ${selectedTerminal.provider}`}>
-                <Icon icon={selectedTerminal.provider === 'claude' ? ClaudeIcon : ChatGptIcon} size={12} />
-                {selectedTerminal.name}
+                <Icon icon={providerIcon(selectedTerminal.provider)} size={12} />
+                {providerLabel(selectedTerminal.provider)}
               </span>
               {selectedSession?.branch && <code title={selectedSession.branch}>{selectedSession.branch}</code>}
-              <code title={selectedTerminal.cwd}>{selectedTerminal.cwd}</code>
+              <code className="terminal-cwd" title={selectedTerminal.cwd}>{compactTerminalPath(selectedTerminal.cwd)}</code>
               <span className="terminal-pid">PID {selectedTerminal.pid}</span>
             </>
           ) : (
@@ -350,6 +354,17 @@ function statusLabel(status: TerminalSnapshot['status']): string {
     case 'stopping': return 'Stopping';
     case 'exited': return 'Exited';
   }
+}
+
+function terminalAccessLabel(terminal: TerminalSnapshot): string {
+  if ((terminal.outputMode ?? 'terminal') === 'event-stream') return 'Read only';
+  return terminal.role === 'orchestrator' ? 'Auto mode' : 'Interactive';
+}
+
+function compactTerminalPath(path: string): string {
+  const segments = path.split('/').filter(Boolean);
+  if (segments.length <= 4) return path;
+  return `…/${segments.slice(-3).join('/')}`;
 }
 
 function sessionStatusLabel(status: AgentSession['status']): string {
